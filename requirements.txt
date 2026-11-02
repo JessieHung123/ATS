@@ -1,0 +1,9 @@
+anthropic>=1.13
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
+pdfplumber>=0.11
+python-docx>=1.1
+# 舊版 Streamlit 介面（app.py）才需要
+streamlit>=1.65
+pandas>=3.0

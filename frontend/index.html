@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ATS 職能評分教學系統</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <strong>ATS 職能評分教學系統</strong>
+    <span class="muted">職缺拆解 → 權重設定 → 履歷評分 → 面試問題</span>
+  </div>
+  <div class="topbar-right">
+    <label class="switch" title="關閉時一律使用規則式判斷（不呼叫 AI、不產生費用）">
+      <input type="checkbox" id="use-ai" checked> 使用 AI
+    </label>
+    <span id="ai-status" class="pill">檢查中…</span>
+    <details class="settings">
+      <summary>設定</summary>
+      <div class="settings-panel">
+        <label>Anthropic API Key
+          <input type="password" id="api-key" placeholder="sk-ant-…（留空則使用伺服器環境變數）">
+        </label>
+        <p class="muted small">金鑰只存在這台電腦瀏覽器的 localStorage，隨請求送到本機後端。</p>
+        <div class="row">
+          <button id="save-key" class="btn">儲存</button>
+          <button id="reset-all" class="btn ghost danger">清除所有資料</button>
+        </div>
+      </div>
+    </details>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="m1" class="active"><span class="num">1</span>職缺拆解</button>
+  <button data-tab="m2"><span class="num">2</span>權重與評分標準</button>
+  <button data-tab="m3"><span class="num">3</span>履歷評分</button>
+  <button data-tab="m4"><span class="num">4</span>面試問題</button>
+</nav>
+
+<main>
+  <!-- ================= 模組 1 ================= -->
+  <section id="m1" class="tab-panel active">
+    <div class="grid-2">
+      <div class="card">
+        <h2>職缺輸入</h2>
+        <div class="row wrap" id="sample-jobs"><span class="muted small">範例職缺：</span></div>
+        <div class="form-grid">
+          <label>職稱<input id="f-title" placeholder="例：行銷企劃專員"></label>
+          <label>年資要求<input id="f-years" placeholder="例：2 年以上相關經驗"></label>
+          <label class="span-2">學歷<input id="f-education" placeholder="例：大學以上，商管相關科系"></label>
+          <label>必備條件（一行一項）<textarea id="f-required" rows="4"></textarea></label>
+          <label>加分條件（一行一項）<textarea id="f-bonus" rows="4"></textarea></label>
+          <label class="span-2">JD 全文<textarea id="f-jd" rows="10" placeholder="貼上職缺描述…"></textarea></label>
+        </div>
+        <div class="row">
+          <button id="btn-extract" class="btn primary">AI 拆解職能</button>
+          <span id="extract-msg" class="muted small"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row space">
+          <h2>職能矩陣 <span id="matrix-source" class="pill small"></span></h2>
+        </div>
+        <p class="callout">
+          可以直接新增、刪除、改名職能。試試看：把 JD 改得模糊一點（例如只寫「抗壓性高、溝通能力佳」）重新拆解，
+          再看看同一份履歷的分數怎麼變。<b>JD 寫得好不好，直接影響 AI 篩選。</b>
+        </p>
+        <div id="matrix-empty" class="empty">還沒有職能矩陣，請先在左邊輸入職缺並按「拆解職能」。</div>
+        <div id="matrix-editor" hidden>
+          <div class="matrix-col">
+            <div class="row space"><h3>硬實力 <span class="muted small">工具、證照、專業技能</span></h3>
+              <button class="btn small" data-add="hard">＋ 新增</button></div>
+            <div id="list-hard"></div>
+          </div>
+          <div class="matrix-col">
+            <div class="row space"><h3>軟實力／行為特徵 <span class="muted small">協作、解決問題、溝通</span></h3>
+              <button class="btn small" data-add="soft">＋ 新增</button></div>
+            <div id="list-soft"></div>
+          </div>
+          <div class="matrix-col">
+            <div class="row space"><h3>門檻條件 <span class="muted small">Knock-out：年資、學歷</span></h3>
+              <button class="btn small" data-add="knockout">＋ 新增</button></div>
+            <div id="list-knockout"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 模組 2 ================= -->
+  <section id="m2" class="tab-panel">
+    <div class="grid-2">
+      <div class="card">
+        <h2>大類權重 <span class="muted small">總和固定為 100%</span></h2>
+        <div class="row wrap" id="presets"></div>
+        <div id="weight-sliders"></div>
+        <p class="muted small">調整其中一項時，其餘兩項會依比例自動調整。某大類沒有任何職能時，其權重會平均分給其他大類。</p>
+      </div>
+      <div class="card">
+        <h2>權重組合比較 <span class="muted small">同一批履歷、不同權重</span></h2>
+        <div id="preset-compare"><div class="empty">到「履歷評分」分析至少一份履歷後，這裡會顯示各權重組合下的分數與排名變化。</div></div>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h2>評分尺度（Rubric）</h2>
+        <p class="muted small">每個職能 0–3 分。先編輯預設尺度，再套用到全部職能；也可以針對個別職能調整。</p>
+        <div id="rubric-default" class="rubric-edit"></div>
+        <div class="row"><button id="apply-rubric" class="btn">套用到所有職能</button></div>
+        <div id="rubric-items"></div>
+      </div>
+      <div class="card">
+        <h2>門檻條件處理方式</h2>
+        <p class="muted small">履歷「確定不符合」時的處理。無法判斷（待確認）時不扣分，但會列入缺口分析。</p>
+        <div id="knockout-settings"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 模組 3 ================= -->
+  <section id="m3" class="tab-panel">
+    <div class="grid-2 left-narrow">
+      <div>
+        <div class="card">
+          <h2>輸入履歷</h2>
+          <div class="row wrap" id="sample-resumes"><span class="muted small">範例履歷：</span></div>
+          <label>候選人姓名（可留空）<input id="r-name"></label>
+          <label>履歷內容<textarea id="r-text" rows="12" placeholder="貼上履歷文字…"></textarea></label>
+          <div class="row space">
+            <label class="btn ghost file-btn">上傳 PDF / Word<input type="file" id="r-file" accept=".pdf,.docx,.txt" hidden></label>
+            <button id="btn-analyze" class="btn primary">分析這份履歷</button>
+          </div>
+          <div id="analyze-msg" class="muted small"></div>
+        </div>
+        <div class="card">
+          <div class="row space">
+            <h2>候選人排名</h2>
+            <button id="btn-reanalyze" class="btn small" hidden>職能已變更，全部重新分析</button>
+          </div>
+          <div id="ranking"><div class="empty">尚無候選人。</div></div>
+        </div>
+      </div>
+      <div id="detail"><div class="card empty">選擇或分析一份履歷，這裡會顯示完整評分報告。</div></div>
+    </div>
+  </section>
+
+  <!-- ================= 模組 4 ================= -->
+  <section id="m4" class="tab-panel">
+    <div class="card">
+      <div class="row wrap">
+        <h2>面試問題建議</h2>
+        <select id="iv-candidate"></select>
+        <button id="btn-interview" class="btn primary">產生面試問題</button>
+        <button id="btn-print" class="btn ghost">列印</button>
+        <span id="iv-msg" class="muted small"></span>
+      </div>
+      <p class="muted small">依職位與該候選人的履歷缺口產生三類問題：驗證型（深挖宣稱成果）、補洞型（低分職能）、行為面試題（STAR）。</p>
+    </div>
+    <div id="iv-result"></div>
+  </section>
+</main>
+
+<div id="tooltip" class="tooltip" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
