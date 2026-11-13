@@ -44,8 +44,10 @@ function useAI() { return $("#use-ai").checked; }
 
 async function api(path, body, isForm = false) {
   const headers = {};
-  const key = localStorage.getItem("ats-api-key");
+  const key = localStorage.getItem("ats-gemini-key");
   if (key) headers["X-API-Key"] = key;
+  const model = localStorage.getItem("ats-gemini-model");
+  if (model) headers["X-Model"] = model;
   const opts = { method: body ? "POST" : "GET", headers };
   if (body && isForm) opts.body = body;
   else if (body) { headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
@@ -84,6 +86,12 @@ async function refreshStatus() {
   try {
     const s = await api("/api/status");
     aiAvailable = s.ai_available;
+    const sel = $("#model-select");
+    if (s.models) {
+      sel.innerHTML = Object.entries(s.models)
+        .map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`).join("");
+      sel.value = s.model;
+    }
     const pill = $("#ai-status");
     pill.textContent = aiAvailable ? `AI 可用（${s.model}）` : "未設定 API Key：規則式模式";
     pill.className = "pill " + (aiAvailable ? "ai" : "");
@@ -107,9 +115,10 @@ function showTab(id) {
 }
 
 function bindSettings() {
-  $("#api-key").value = localStorage.getItem("ats-api-key") || "";
+  $("#api-key").value = localStorage.getItem("ats-gemini-key") || "";
   $("#save-key").onclick = async () => {
-    localStorage.setItem("ats-api-key", $("#api-key").value.trim());
+    localStorage.setItem("ats-gemini-key", $("#api-key").value.trim());
+    if ($("#model-select").value) localStorage.setItem("ats-gemini-model", $("#model-select").value);
     await refreshStatus();
     $(".settings").open = false;
   };

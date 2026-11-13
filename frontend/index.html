@@ -20,9 +20,14 @@
     <details class="settings">
       <summary>設定</summary>
       <div class="settings-panel">
-        <label>Anthropic API Key
-          <input type="password" id="api-key" placeholder="sk-ant-…（留空則使用伺服器環境變數）">
+        <label>Gemini API Key（Google AI Studio）
+          <input type="password" id="api-key" placeholder="AIza…（留空則使用伺服器環境變數 GEMINI_API_KEY）">
         </label>
+        <label>Gemini 模型
+          <select id="model-select"><option value="">（載入中…）</option></select>
+        </label>
+        <p class="muted small">太慢或額度用完時，可以換一個模型試試。</p>
+        <p class="muted small">免費申請：<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>。免費版的內容可能被 Google 用於改善產品，請只使用虛構履歷。</p>
         <p class="muted small">金鑰只存在這台電腦瀏覽器的 localStorage，隨請求送到本機後端。</p>
         <div class="row">
           <button id="save-key" class="btn">儲存</button>

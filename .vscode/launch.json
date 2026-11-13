@@ -1,0 +1,28 @@
+{
+    // 按 F5 前，先在上方下拉選單選要用哪一個設定。
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "啟動 ATS 系統（後端 + 開瀏覽器）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": ["backend.main:app", "--host", "127.0.0.1", "--port", "8765"],
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "serverReadyAction": {
+                "pattern": "Uvicorn running on (https?://\\S+)",
+                "uriFormat": "%s",
+                "action": "openExternally"
+            }
+        },
+        {
+            "type": "chrome",
+            "request": "launch",
+            "name": "只開 Chrome（後端要先啟動）",
+            "url": "http://localhost:8765",
+            "webRoot": "${workspaceFolder}"
+        }
+    ]
+}

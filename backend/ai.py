@@ -1,37 +1,10 @@
-"""Claude 呼叫：JD 拆解職能矩陣、履歷逐職能評分、面試問題生成。"""
+"""Gemini 呼叫：JD 拆解職能矩陣、履歷逐職能評分、面試問題生成。"""
 import json
 
-import anthropic
-
 from ats.ai_scorer import FAIRNESS_RULES
+from ats.gemini import MODEL, AIError, call_json as _call  # noqa: F401（MODEL、AIError 供 main.py 使用）
 
 from .matrix import DEFAULT_RUBRIC, DEGREES, new_id
-
-MODEL = "claude-opus-5-5"
-
-
-class AIError(Exception):
-    pass
-
-
-def _call(client: anthropic.Anthropic, system: str, user: str, schema: dict, effort: str = "medium") -> dict:
-    response = client.beta.messages.create(
-        model=MODEL,
-        max_tokens=16000,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    if response.stop_reason == "refusal":
-        raise AIError("模型拒絕處理此內容")
-    if response.stop_reason == "max_tokens":
-        raise AIError("回應超出長度上限")
-    text = next((b.text for b in response.content if b.type == "text"), None)
-    if text is None:
-        raise AIError("模型沒有回傳內容")
-    return json.loads(text)
 
 
 def _obj(props: dict) -> dict:

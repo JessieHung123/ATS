@@ -1,11 +1,6 @@
-"""用 Claude 做語意層面的評估：JD 關鍵字萃取 + 逐份履歷評分。"""
-import json
-
-import anthropic
-
+"""用 Gemini 做語意層面的評估：JD 關鍵字萃取 + 逐份履歷評分。"""
+from .gemini import MODEL, AIError, call_json  # noqa: F401
 from .keywords import Keyword
-
-MODEL = "claude-opus-5-5"
 
 FAIRNESS_RULES = """公平性原則（必須遵守）：
 - 只依據與職務相關的技能、經驗、學歷與成果評分。
@@ -70,29 +65,14 @@ RESUME_SCHEMA = {
 }
 
 
-class ScoringError(Exception):
-    pass
+ScoringError = AIError  # 舊名稱，app.py 仍在使用
 
 
-def _call(client: anthropic.Anthropic, system: str, user: str, schema: dict, effort: str) -> dict:
-    response = client.beta.messages.create(
-        model=MODEL,
-        max_tokens=16000,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    if response.stop_reason == "refusal":
-        raise ScoringError("模型拒絕處理此份內容")
-    if response.stop_reason == "max_tokens":
-        raise ScoringError("回應超出長度上限")
-    text = next(b.text for b in response.content if b.type == "text")
-    return json.loads(text)
+def _call(client, system: str, user: str, schema: dict, effort: str) -> dict:
+    return call_json(client, system, user, schema, effort)
 
 
-def extract_jd_keywords(client: anthropic.Anthropic, jd: str, effort: str = "medium") -> list[Keyword]:
+def extract_jd_keywords(client, jd: str, effort: str = "medium") -> list[Keyword]:
     system = (
         "你是資深招募專員。請從職缺描述（JD）中萃取 ATS 篩選用的關鍵字。\n"
         "- 以硬技能、工具、證照、專業領域、學歷要求為主，避免「溝通能力佳」這類空泛詞。\n"
@@ -105,7 +85,7 @@ def extract_jd_keywords(client: anthropic.Anthropic, jd: str, effort: str = "med
 
 
 def evaluate_resume(
-    client: anthropic.Anthropic,
+    client,
     jd: str,
     keywords: list[Keyword],
     resume_text: str,

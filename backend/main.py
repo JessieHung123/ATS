@@ -1,14 +1,13 @@
 """ATS 教學系統後端（FastAPI）。執行：uvicorn backend.main:app --reload"""
 import io
-import os
 from pathlib import Path
 
-import anthropic
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from ats.gemini import MODELS, env_key, make_client, resolve_model
 from ats.pdf_parser import parse_pdf
 
 from . import ai, samples
@@ -28,12 +27,9 @@ PRESETS = {
 }
 
 
-def get_client(api_key: str | None) -> anthropic.Anthropic | None:
-    key = (api_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "")
-    return anthropic.Anthropic(api_key=key) if key else None
+get_client = make_client  # get_client(api_key, model)
 
-
-AI_ERRORS = (ai.AIError, anthropic.APIError, ValueError, KeyError)
+AI_ERRORS = (ai.AIError, ValueError, KeyError)
 
 
 # ---------------- 資料模型 ----------------
@@ -77,9 +73,9 @@ class InterviewRequest(BaseModel):
 # ---------------- API ----------------
 
 @app.get("/api/status")
-def status(x_api_key: str | None = Header(default=None)):
-    return {"ai_available": get_client(x_api_key) is not None, "model": ai.MODEL,
-            "env_key": bool(os.environ.get("ANTHROPIC_API_KEY"))}
+def status(x_api_key: str | None = Header(default=None), x_model: str | None = Header(default=None)):
+    return {"ai_available": get_client(x_api_key) is not None, "model": resolve_model(x_model), "models": MODELS,
+            "env_key": bool(env_key())}
 
 
 @app.get("/api/samples")
@@ -88,11 +84,12 @@ def get_samples():
 
 
 @app.post("/api/matrix")
-def build_matrix(req: MatrixRequest, x_api_key: str | None = Header(default=None)):
+def build_matrix(req: MatrixRequest, x_api_key: str | None = Header(default=None),
+                 x_model: str | None = Header(default=None)):
     if not req.jd.strip() and not req.fields.required.strip():
         raise HTTPException(400, "請輸入 JD 或必備條件")
     fields = req.fields.model_dump()
-    client = get_client(x_api_key) if req.use_ai else None
+    client = get_client(x_api_key, x_model) if req.use_ai else None
     if client:
         try:
             return {"matrix": ai.extract_matrix(client, req.jd, fields), "source": "ai"}
@@ -126,11 +123,12 @@ async def parse_resume(file: UploadFile = File(...)):
 
 
 @app.post("/api/resume/analyze")
-def analyze_resume(req: AnalyzeRequest, x_api_key: str | None = Header(default=None)):
+def analyze_resume(req: AnalyzeRequest, x_api_key: str | None = Header(default=None),
+                   x_model: str | None = Header(default=None)):
     if not req.resume.strip():
         raise HTTPException(400, "履歷內容是空的")
     detector = analyze_sentences(req.resume)
-    client = get_client(x_api_key) if req.use_ai else None
+    client = get_client(x_api_key, x_model) if req.use_ai else None
     warning = None
     if client:
         try:
@@ -154,9 +152,10 @@ def score(req: ScoreRequest):
 
 
 @app.post("/api/interview")
-def interview(req: InterviewRequest, x_api_key: str | None = Header(default=None)):
+def interview(req: InterviewRequest, x_api_key: str | None = Header(default=None),
+              x_model: str | None = Header(default=None)):
     result = compute(req.matrix, req.weights, req.analysis)
-    client = get_client(x_api_key) if req.use_ai else None
+    client = get_client(x_api_key, x_model) if req.use_ai else None
     if client:
         try:
             return {**ai.interview_questions(client, req.jd, req.matrix, req.analysis, result, req.resume), "source": "ai"}

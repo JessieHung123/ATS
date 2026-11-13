@@ -1,12 +1,11 @@
 """ATS 履歷評分系統 — Streamlit 介面。執行：streamlit run app.py"""
-import os
 from concurrent.futures import ThreadPoolExecutor
 
-import anthropic
 import pandas as pd
 import streamlit as st
 
 from ats.ai_scorer import ScoringError, evaluate_resume, extract_jd_keywords
+from ats.gemini import env_key, make_client
 from ats.keywords import Keyword, match_keywords, naive_extract
 from ats.pdf_parser import parse_pdf
 
@@ -46,7 +45,7 @@ def score_one(client, jd, keywords, filename, data, effort) -> dict:
     if client and parsed.readable:
         try:
             result["ai"] = evaluate_resume(client, jd, keywords, parsed.text, effort)
-        except (ScoringError, anthropic.APIError) as e:
+        except ScoringError as e:
             result["warnings"].append(f"AI 評分失敗：{e}")
     return result
 
@@ -60,18 +59,18 @@ def final_score(r: dict, kw_weight: float) -> float:
 # ---------------- 側邊欄 ----------------
 with st.sidebar:
     st.header("⚙️ 設定")
-    default_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    api_key = st.text_input("Anthropic API Key", value=default_key, type="password",
+    default_key = env_key()
+    api_key = st.text_input("Gemini API Key（Google AI Studio）", value=default_key, type="password",
                             help="留空則只使用關鍵字比對（不呼叫 AI）")
     effort = st.select_slider("AI 評估深度", options=["low", "medium", "high"], value="medium",
-                              help="越深越精準，但較慢、費用較高")
+                              help="越深越精準，但較慢、較快用完免費額度")
     kw_weight = st.slider("關鍵字分數權重", 0.0, 1.0, 0.4, 0.05,
                           help="總分 = 關鍵字分數 × 權重 + AI 分數 × (1 − 權重)")
     st.caption(f"總分 = 關鍵字 × {kw_weight:.2f} + AI × {1 - kw_weight:.2f}")
     st.divider()
     st.caption("AI 已設定為忽略年齡、性別、婚姻等與職務無關的個人特徵。評分僅供參考，最終決策請由 HR 判斷。")
 
-client = anthropic.Anthropic(api_key=api_key) if api_key else None
+client = make_client(api_key)
 
 st.title("📄 ATS 履歷評分系統")
 st.caption("貼上職缺描述、上傳候選人履歷（PDF），系統以「關鍵字比對 + AI 語意評估」為候選人評分排名。")
@@ -82,10 +81,10 @@ jd = st.text_area("貼上職缺描述", height=200, placeholder="例：我們正
 
 if st.button("🔍 分析 JD 關鍵字", disabled=not jd.strip()):
     if client:
-        with st.spinner("Claude 正在萃取關鍵字…"):
+        with st.spinner("Gemini 正在萃取關鍵字…"):
             try:
                 st.session_state.keywords_df = keywords_to_df(extract_jd_keywords(client, jd, effort))
-            except (ScoringError, anthropic.APIError) as e:
+            except ScoringError as e:
                 st.error(f"AI 萃取失敗，改用簡易萃取：{e}")
                 st.session_state.keywords_df = keywords_to_df(naive_extract(jd))
     else:

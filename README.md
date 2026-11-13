@@ -4,6 +4,10 @@ HR 課堂用的 ATS 模擬系統（FastAPI 後端 + 原生 JS 前端）：把職
 
 ## 執行
 
+**最簡單：雙擊 `start.bat`**。第一次會自動建立環境、安裝套件，之後直接啟動並打開瀏覽器（http://127.0.0.1:8765）。關掉黑色視窗即停止。
+
+手動啟動：
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -12,8 +16,8 @@ python -m venv .venv
 
 開啟 http://localhost:8000 。
 
-- **有 API Key**（右上角「設定」輸入，或設定環境變數 `ANTHROPIC_API_KEY`）：職能拆解、逐職能評分、面試問題由 Claude（`claude-opus-5-5`）產生。
-- **沒有 API Key** 或取消勾選「使用 AI」：全部改用規則式（職能字典、關鍵字比對、範本題目），課堂上不產生任何費用。
+- **有 Gemini API Key**（到 [Google AI Studio](https://aistudio.google.com/apikey) 免費申請；在右上角「設定」輸入，或設定環境變數 `GEMINI_API_KEY`）：職能拆解、逐職能評分、面試問題由 Google Gemini 產生；模型可在「設定」切換：`gemini-3.5-flash-lite`（預設，最快）、`gemini-3.6-flash`（平衡）、`gemini-3.8-flash`（最聰明但較慢），也可用環境變數 `GEMINI_MODEL` 指定預設值。免費版有每日使用上限，且內容可能被 Google 用於改善產品，請只使用虛構履歷。
+- **沒有 API Key** 或取消勾選「使用 AI」：全部改用規則式（職能字典、關鍵字比對、範本題目），完全不需連網或 API Key。
 - 「動詞 + 成果 + 量化數據」偵測器永遠是規則式，判斷理由逐句列出，方便學生理解。
 - 資料存在瀏覽器 localStorage，重新整理不會遺失；「設定 → 清除所有資料」可重來。
 
@@ -36,13 +40,13 @@ python -m venv .venv
 
 ```
 backend/main.py       FastAPI 路由，並提供前端靜態檔
-backend/ai.py         Claude 呼叫：職能拆解、履歷評分、面試問題（含範本備案）
+backend/ai.py         Gemini 呼叫：職能拆解、履歷評分、面試問題（含範本備案）
 backend/matrix.py     職能矩陣結構、規則式拆解（職能字典）
 backend/scoring.py    規則式評分、權重加總、門檻、缺口分析
 backend/sentences.py  動詞＋成果＋數據偵測器
 backend/samples.py    範例職缺與範例履歷（虛構）
 frontend/             index.html、app.js、styles.css
-ats/                  PDF 解析與關鍵字比對（與舊版共用）
+ats/                  Gemini 共用呼叫（gemini.py）、PDF 解析與關鍵字比對（與舊版共用）
 app.py                舊版 Streamlit 介面（streamlit run app.py）
 ```
 
