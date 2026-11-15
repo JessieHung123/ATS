@@ -2,6 +2,7 @@
 
 規則式、可解釋、不需 API，學生可以直接看到每句為什麼被判成某個顏色。
 """
+import datetime as dt
 import re
 
 ACTION_VERBS = [
@@ -34,6 +35,31 @@ EDU_MARK = re.compile(r"學系|學士|碩士|博士|研究所|高中|高職|univ
 SELF_PRAISE = re.compile(r"能力(佳|強|好)|精神|個性|熱愛|抗壓性|願意學習|有興趣|積極|認真負責")
 BULLET = re.compile(r"^\s*([-•·●▪*‧]|\d+[.、)])\s*")
 SPLIT = re.compile(r"(?<=[。；;!！?？])")
+WORK_SECTION = re.compile(
+    r"^\s*(?:【\s*)?(工作經歷|工作經驗|工作履歷|任職經歷|職涯經歷|經歷|"
+    r"work experience|professional experience|employment history|experience)"
+    r"(?:\s*】)?\s*[:：]?\s*(.*)$",
+    re.I,
+)
+OTHER_SECTION = re.compile(
+    r"^\s*(?:【\s*)?(學歷|教育背景|自我介紹|自傳|個人簡介|個人資料|聯絡資訊|聯絡方式|"
+    r"技能|專長|專業技能|證照|證書|語言能力|語言|獎項榮譽|獎項|榮譽|得獎|"
+    r"專案經驗|專案|作品集|education|summary|profile|contact|skills|certifications?|"
+    r"languages|awards|honors|projects|portfolio)"
+    r"(?:\s*】)?\s*[:：]?(?:\s|$)",
+    re.I,
+)
+WORK_DATE_RANGE = re.compile(
+    r"((?:19|20)\d{2})(?:\s*[./年-]\s*(\d{1,2})\s*月?)?\s*[–—\-~～至到]+\s*"
+    r"(?:((?:19|20)\d{2})(?:\s*[./年-]\s*(\d{1,2})\s*月?)?|(至今|現在|目前|present))",
+    re.I,
+)
+NON_EMPLOYMENT = re.compile(
+    r"交換學生|交換生|學生交換|交換半年|留學|就讀|求學|在學|"
+    r"study abroad|exchange student",
+    re.I,
+)
+LEVELS = {"green", "yellow", "red", "info"}
 
 
 def _contains(text: str, words: list[str]) -> list[str]:
@@ -54,6 +80,71 @@ def split_sentences(resume: str) -> list[str]:
     return out
 
 
+def extract_work_experience(resume: str) -> tuple[str, bool]:
+    lines = resume.splitlines()
+    collected = []
+    in_work_section = False
+
+    for line in lines:
+        match = WORK_SECTION.match(line)
+        if match:
+            in_work_section = True
+            if match.group(2).strip():
+                collected.append(match.group(2).strip())
+            continue
+        if in_work_section and OTHER_SECTION.match(line):
+            break
+        if in_work_section:
+            collected.append(line)
+
+    work_text = "\n".join(collected)
+    date_ranges = list(WORK_DATE_RANGE.finditer(work_text))
+    if not date_ranges:
+        return work_text, bool(work_text.strip())
+
+    employment_entries = [work_text[:date_ranges[0].start()]]
+    for index, date_range in enumerate(date_ranges):
+        end = date_ranges[index + 1].start() if index + 1 < len(date_ranges) else len(work_text)
+        entry = work_text[date_range.start():end]
+        if not NON_EMPLOYMENT.search(entry):
+            employment_entries.append(entry)
+
+    filtered_text = "\n".join(part.strip() for part in employment_entries if part.strip())
+    return filtered_text, bool(filtered_text.strip())
+
+
+def calculate_work_experience_months(resume: str, today: dt.date | None = None) -> int | None:
+    work_text, found = extract_work_experience(resume)
+    if not found:
+        return None
+
+    today = today or dt.date.today()
+    months = set()
+    for match in WORK_DATE_RANGE.finditer(work_text):
+        start_year = int(match.group(1))
+        start_month = int(match.group(2) or 1)
+        end_year = today.year if match.group(5) else int(match.group(3))
+        end_month = today.month if match.group(5) else int(match.group(4) or 12)
+        start = start_year * 12 + start_month - 1
+        end = min(end_year * 12 + end_month - 1, today.year * 12 + today.month - 1)
+        if start > end:
+            continue
+        months.update(range(start, end + 1))
+
+    return len(months) if months else None
+
+
+def format_work_experience(months: int | None) -> str:
+    if months is None:
+        return "履歷未提供可計算的工作期間"
+    years, remaining_months = divmod(months, 12)
+    if years and remaining_months:
+        return f"{years} 年 {remaining_months} 個月"
+    if years:
+        return f"{years} 年"
+    return f"{remaining_months} 個月"
+
+
 def classify(sentence: str) -> dict:
     body = BULLET.sub("", sentence).strip()
     plain = body.rstrip("。；;.")
@@ -67,6 +158,7 @@ def classify(sentence: str) -> dict:
         or LABEL_PREFIX.match(plain)
         or CONTACT.search(plain)
         or (("｜" in plain or "|" in plain) and DATE.search(plain))
+        or (DATE.search(plain) and not has_verb)
         or (EDU_MARK.search(plain) and (DATE.search(plain) or not has_verb))
         or (len(plain) <= 12 and not has_verb and not _contains(plain, VAGUE_WORDS))
     ):
@@ -103,8 +195,35 @@ def classify(sentence: str) -> dict:
 
 
 def analyze_sentences(resume: str) -> dict:
-    sentences = [classify(s) for s in split_sentences(resume)]
+    work_experience, section_found = extract_work_experience(resume)
+    sentences = [classify(s) for s in split_sentences(work_experience)]
     stats = {k: sum(1 for s in sentences if s["level"] == k) for k in ("green", "yellow", "red", "info")}
     judged = stats["green"] + stats["yellow"] + stats["red"]
     stats["quality"] = round((stats["green"] + 0.5 * stats["yellow"]) / judged * 100) if judged else 0
-    return {"sentences": sentences, "stats": stats}
+    return {"sentences": sentences, "stats": stats, "work_section_found": section_found}
+
+
+def apply_ai_classifications(analysis: dict, evaluations: list[dict]) -> int:
+    classified = {}
+    for evaluation in evaluations:
+        index = evaluation.get("index")
+        level = evaluation.get("level")
+        reason = evaluation.get("reason")
+        if (
+            isinstance(index, int)
+            and 0 <= index < len(analysis["sentences"])
+            and level in LEVELS
+            and isinstance(reason, str)
+        ):
+            classified[index] = {"level": level, "reason": reason}
+
+    for index, sentence in enumerate(analysis["sentences"]):
+        if index in classified:
+            sentence.update(classified[index])
+
+    stats = {key: sum(s["level"] == key for s in analysis["sentences"])
+             for key in ("green", "yellow", "red", "info")}
+    judged = stats["green"] + stats["yellow"] + stats["red"]
+    stats["quality"] = round((stats["green"] + 0.5 * stats["yellow"]) / judged * 100) if judged else 0
+    analysis["stats"] = stats
+    return len(classified)
