@@ -1,15 +1,21 @@
 """評分：規則式履歷分析（無 API 時）＋ 權重加總、門檻、缺口分析（永遠由這裡計算）。"""
+import datetime as dt
 import re
 
 from ats.keywords import _pattern
 
 from .matrix import DEGREE_ALIASES, DEGREES
-from .sentences import calculate_work_experience_months, format_work_experience
 
 GROUP_LABELS = {"skill": "專業技能", "experience": "專案經驗", "soft": "軟實力"}
 IMPORTANCE_WEIGHT = {"必備": 2.0, "加分": 1.0}
 LEVEL_TO_SCORE = {"green": 3, "yellow": 2, "red": 1, "info": 1}
 
+EDU_LINE = re.compile(r"學系|大學|學士|碩士|博士|研究所|高中|高職|專科|university|college", re.I)
+RANGE = re.compile(
+    r"((?:19|20)\d{2})(?:\s*[./年-]\s*(\d{1,2}))?\s*[–—\-~～至到]+\s*"
+    r"(?:((?:19|20)\d{2})(?:\s*[./年-]\s*(\d{1,2}))?|(至今|現在|present))",
+    re.I,
+)
 EXPLICIT_YEARS = re.compile(r"(\d+(?:\.\d+)?)\s*年(?:以上)?(?:的)?(?:相關|工作)?(?:經驗|經歷)")
 
 
@@ -43,7 +49,18 @@ def rule_score_items(matrix: dict, sentences: list[dict]) -> list[dict]:
 
 def estimate_years(resume: str) -> float:
     explicit = [float(m.group(1)) for m in EXPLICIT_YEARS.finditer(resume)]
-    months = calculate_work_experience_months(resume) or 0
+    today = dt.date.today()
+    months = 0
+    for line in resume.splitlines():
+        if EDU_LINE.search(line):
+            continue
+        for m in RANGE.finditer(line):
+            y1, m1 = int(m.group(1)), int(m.group(2) or 1)
+            if m.group(5):
+                y2, m2 = today.year, today.month
+            else:
+                y2, m2 = int(m.group(3)), int(m.group(4) or 12)
+            months += max(0, (y2 - y1) * 12 + (m2 - m1))
     return round(max([months / 12, *explicit]), 1)
 
 
@@ -60,15 +77,13 @@ def rule_check_knockouts(matrix: dict, resume: str) -> list[dict]:
     for ko in matrix["knockouts"]:
         if ko["kind"] == "years" and ko.get("min_years"):
             years = estimate_years(resume)
-            months = calculate_work_experience_months(resume)
             if years == 0:
                 out.append({"id": ko["id"], "status": "unknown", "evidence": "",
                             "reason": "履歷中找不到可計算的工作期間"})
             else:
                 status = "met" if years >= ko["min_years"] else "not_met"
-                duration = format_work_experience(months)
-                out.append({"id": ko["id"], "status": status, "evidence": f"累計工作年資：{duration}",
-                            "reason": f"（規則判斷）要求 {ko['min_years']} 年，日期合計 {duration}"})
+                out.append({"id": ko["id"], "status": status, "evidence": f"工作期間合計約 {years} 年",
+                            "reason": f"（規則判斷）要求 {ko['min_years']} 年，估算 {years} 年"})
         elif ko["kind"] == "education" and ko.get("min_degree", "不限") != "不限":
             degree = highest_degree(resume)
             if degree == "不限":
