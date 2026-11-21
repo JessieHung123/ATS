@@ -54,7 +54,7 @@ def env_key() -> str:
     return os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
 
 
-def call_json(gc: GeminiClient, system: str, user: str | list[dict], schema: dict, effort: str = "low") -> dict:
+def call_json(gc: GeminiClient, system: str, user: str, schema: dict, effort: str = "low") -> dict:
     """送出一次請求，回傳解析後的 JSON。任何失敗都轉成 AIError，讓呼叫端改用規則式備案。"""
     try:
         try:
