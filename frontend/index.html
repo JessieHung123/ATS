@@ -133,7 +133,7 @@
         <div class="card">
           <h2>輸入履歷</h2>
           <div class="row wrap" id="sample-resumes"><span class="muted small">範例履歷：</span></div>
-          <label>候選人姓名（可留空）<input id="r-name"></label>
+          <label>候選人姓名（AI 辨識後自動填入，可修改）<input id="r-name"></label>
           <label>履歷內容<textarea id="r-text" rows="12" placeholder="貼上履歷文字…"></textarea></label>
           <div class="row space">
             <label class="btn ghost file-btn">上傳 PDF / Word<input type="file" id="r-file" accept=".pdf,.docx,.txt" hidden></label>
@@ -144,7 +144,7 @@
         <div class="card">
           <div class="row space">
             <h2>候選人排名</h2>
-            <button id="btn-reanalyze" class="btn small" hidden>職能已變更，全部重新分析</button>
+            <button id="btn-reanalyze" class="btn small" hidden>重新分析全部履歷</button>
           </div>
           <div id="ranking"><div class="empty">尚無候選人。</div></div>
         </div>
