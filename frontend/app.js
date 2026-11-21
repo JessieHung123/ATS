@@ -679,13 +679,18 @@ function renderInterview() {
     $("#iv-result").innerHTML = `<div class="card empty">${c ? `按「產生面試問題」為 ${esc(c.name)} 設計題目。` : "尚無候選人。"}</div>`;
     return;
   }
-  const sec = (title, desc, list, star) => `<div class="card iv-section"><h2>${title} <span class="muted small">${desc}</span></h2>
+  const sec = (title, desc, list, star) => {
+    if (!list) return "";  // 舊版存下的結果沒有新類別，重新產生即可
+    return `<div class="card iv-section"><h2>${title} <span class="muted small">${desc}</span></h2>
     ${list.length ? list.map((q) => qCard(q, star)).join("") : '<div class="empty small">此候選人沒有適合這類的題目。</div>'}</div>`;
+  };
   $("#iv-result").innerHTML = `<div class="card"><b>${esc(c?.name || "")}</b>｜${esc(state.matrix?.job_title || "")}
       <span class="pill small ${data.source === "ai" ? "ai" : ""}">${data.source === "ai" ? "AI 生成" : "範本生成"}</span></div>`
+    + sec("履歷深挖", "逐段了解工作經歷、離職原因與空窗期", data.resume_dive, false)
     + sec("驗證型", "針對履歷宣稱的成果深挖", data.verification, false)
     + sec("補洞型", "針對得分低的職能提問", data.gap, false)
-    + sec("行為面試題", "STAR 結構", data.behavioral, true);
+    + sec("行為面試題", "STAR 結構", data.behavioral, true)
+    + sec("動機與適配度", "應徵動機、職涯規劃與工作適配", data.motivation, false);
 }
 
 init();

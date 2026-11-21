@@ -120,10 +120,20 @@ _BEHAVIORAL = _obj({
     "competency": _STR, "question": _STR, "why": _STR, "listen_for": _STRS, "scoring": _STRS,
     "star": _obj({"S": _STR, "T": _STR, "A": _STR, "R": _STR}),
 })
+# 各類題數（同時寫進 prompt 與 schema，Gemini 會強制遵守 minItems／maxItems）
+QUESTION_COUNTS = {"resume_dive": 2, "verification": 4, "gap": 4, "behavioral": 4, "motivation": 3}
+
+
+def _list(item: dict, n: int) -> dict:
+    return {"type": "array", "items": item, "minItems": n, "maxItems": n}
+
+
 INTERVIEW_SCHEMA = _obj({
-    "verification": {"type": "array", "items": _QUESTION},
-    "gap": {"type": "array", "items": _QUESTION},
-    "behavioral": {"type": "array", "items": _BEHAVIORAL},
+    "resume_dive": _list(_QUESTION, QUESTION_COUNTS["resume_dive"]),
+    "verification": _list(_QUESTION, QUESTION_COUNTS["verification"]),
+    "gap": _list(_QUESTION, QUESTION_COUNTS["gap"]),
+    "behavioral": _list(_BEHAVIORAL, QUESTION_COUNTS["behavioral"]),
+    "motivation": _list(_QUESTION, QUESTION_COUNTS["motivation"]),
 })
 
 
@@ -134,14 +144,24 @@ def interview_questions(client, jd: str, matrix: dict, analysis: dict, result: d
         it = by_id.get(c["id"], {"score": 0, "evidence": [], "reason": ""})
         lines.append(f"- {c['name']}（{c['importance']}，{c['type']}）得分 {it['score']}/3｜佐證：{' / '.join(it['evidence']) or '無'}")
     gaps = "\n".join(f"- {g['name']}：{g['issue']}" for g in result.get("gaps", [])) or "（無）"
+    n = QUESTION_COUNTS
     system = (
         "你是結構化面試設計專家，以繁體中文設計面試問題。\n\n"
         f"{FAIRNESS_RULES}\n不得詢問婚育、年齡、宗教、政治、家庭等與職務無關或違反就業歧視規範的問題。\n\n"
-        "請產出三類問題：\n"
-        "- verification（驗證型，3 題）：針對履歷中宣稱的具體成果深挖，確認是否為本人貢獻、數據如何計算。\n"
-        "- gap（補洞型，3 題）：針對得分 0–1 的職能或未確認的門檻提問，給候選人補充證明的機會。\n"
-        "- behavioral（行為面試題，3 題）：以 STAR 結構設計，聚焦軟實力；star 欄位說明每個階段希望候選人交代什麼。\n"
-        "每題附上：competency（對應職能）、why（為什麼問這題）、listen_for（面試官想聽到什麼，2–4 點）、"
+        "請產出五類問題：\n"
+        f"- resume_dive（履歷深挖，{n['resume_dive']} 題）：針對履歷中的工作經歷逐段了解，"
+        "例如「這份工作你主要負責什麼？」「為什麼離開上一份工作？」「這段空窗期在做什麼？」。"
+        "題目要點名履歷中具體的公司、職稱或期間；履歷沒有明顯空窗期時，不要問空窗期。"
+        "詢問離職原因或空窗期時只聚焦與工作相關的部分，不得追問健康、懷孕、家庭照顧等個人隱私。\n"
+        f"- verification（驗證型，{n['verification']} 題）：針對履歷中宣稱的具體成果深挖，確認是否為本人貢獻、數據如何計算。\n"
+        f"- gap（補洞型，{n['gap']} 題）：針對得分 0–1 的職能或未確認的門檻提問，給候選人補充證明的機會；"
+        "低分職能不足時，改問得分 2 分、仍需確認的職能。\n"
+        f"- behavioral（行為面試題，{n['behavioral']} 題）：以 STAR 結構設計，聚焦軟實力；star 欄位說明每個階段希望候選人交代什麼。\n"
+        f"- motivation（動機與適配度，{n['motivation']} 題）：了解應徵這個職位的動機、對職位與公司的了解、"
+        "職涯規劃，以及與工作內容和工作方式的適配程度。不得用婚育、家人意見等個人狀況來評估穩定度。\n"
+        "同一類的題目不要重複問同一件事。\n"
+        "每題附上：competency（對應職能；履歷深挖與動機類可填「工作經歷」「應徵動機」「職涯規劃」「工作適配」等）、"
+        "why（為什麼問這題）、listen_for（面試官想聽到什麼，2–4 點）、"
         "scoring（評分要點，依序寫 1 分／2 分／3 分的回答表現，共 3 點）。"
     )
     user = (
@@ -171,11 +191,11 @@ def rule_interview(matrix: dict, analysis: dict, result: dict) -> dict:
             "listen_for": ["明確區分個人與團隊的貢獻", "數據的來源與計算方式", "遇到的困難與取捨"],
             "scoring": scoring,
         })
-        if len(verification) == 3:
+        if len(verification) == QUESTION_COUNTS["verification"]:
             break
 
     gap = []
-    for g in result.get("gaps", [])[:3]:
+    for g in result.get("gaps", [])[:QUESTION_COUNTS["gap"]]:
         if g["group"] == "門檻條件":
             q = f"這個職缺的門檻是「{g['name']}」，目前{g['issue']}，可以補充說明你的相關背景嗎？"
         else:
@@ -184,8 +204,9 @@ def rule_interview(matrix: dict, analysis: dict, result: dict) -> dict:
                     "listen_for": ["具體的情境與行動", "能否舉出實例而非泛泛而談", "學習或補強的計畫"],
                     "scoring": scoring})
 
+    nb = QUESTION_COUNTS["behavioral"]
     behavioral = []
-    for c in [c for c in comps if c["type"] == "soft"][:3] or comps[:3]:
+    for c in [c for c in comps if c["type"] == "soft"][:nb] or comps[:nb]:
         behavioral.append({
             "competency": c["name"],
             "question": f"請描述一次最能展現你「{c['name']}」的經驗。當時的情境是什麼？你採取了哪些行動？最後結果如何？",
@@ -194,4 +215,45 @@ def rule_interview(matrix: dict, analysis: dict, result: dict) -> dict:
             "scoring": scoring,
             "star": {"S": "當時的背景與挑戰", "T": "你被賦予或主動承擔的任務", "A": "你具體採取的步驟與理由", "R": "結果、數據與學到的事"},
         })
-    return {"verification": verification, "gap": gap, "behavioral": behavioral}
+
+    resume_dive = [
+        {"competency": "工作經歷",
+         "question": "請挑履歷中最近的一份工作，說明你主要負責什麼？一般一週的工作內容是什麼，你在團隊中扮演什麼角色？",
+         "why": "釐清履歷上的職稱與實際職責是否一致",
+         "listen_for": ["能具體說出負責的範圍與產出", "清楚區分自己與團隊的工作", "與應徵職位相關的經驗"],
+         "scoring": ["1 分：只重複職稱，說不出實際內容",
+                     "2 分：能說明主要職責，但缺少具體例子",
+                     "3 分：職責、例子與成果都清楚，並能連結到應徵的職位"]},
+        {"competency": "工作經歷",
+         "question": "你離開上一份工作（或這次想轉換工作）的主要原因是什麼？這次求職希望找到什麼樣的環境？",
+         "why": "了解轉職動機，以及是否和這個職位的條件相符",
+         "listen_for": ["原因聚焦在職涯與工作本身", "能客觀描述，不過度批評前公司", "對下一份工作有清楚的期待"],
+         "scoring": ["1 分：原因模糊或多為抱怨",
+                     "2 分：原因合理，但和這個職位的關聯不明確",
+                     "3 分：原因清楚且正面，並說明這個職位為何符合下一步規劃"]},
+    ][:QUESTION_COUNTS["resume_dive"]]
+
+    title = matrix.get("job_title") or "這個職位"
+    motivation_scoring = ["1 分：答案籠統，看不出對職位的了解",
+                          "2 分：有基本了解與動機，但和自身經驗的連結不足",
+                          "3 分：動機具體，能結合自身經驗與職位需求說明適配性"]
+    motivation = [
+        {"competency": "應徵動機",
+         "question": f"為什麼想應徵「{title}」這個職位？是什麼吸引你？",
+         "why": "了解應徵動機是否與職位內容相符",
+         "listen_for": ["對職位內容有具體了解", "動機和自身經驗或興趣有連結", "不只是因為薪資或地點"],
+         "scoring": motivation_scoring},
+        {"competency": "工作適配",
+         "question": "你對我們公司和這個職位的工作內容了解多少？你覺得哪些部分最符合你的期待，哪些可能需要適應？",
+         "why": "確認對工作的期待是否實際，降低到職後的落差",
+         "listen_for": ["事前有做功課", "能誠實說出需要適應的地方", "對工作方式與節奏有合理預期"],
+         "scoring": motivation_scoring},
+        {"competency": "職涯規劃",
+         "question": "未來三到五年，你希望自己在專業上有什麼成長？這個職位可以怎麼幫助你達成？",
+         "why": "評估職涯方向與職位發展是否一致",
+         "listen_for": ["有清楚的職涯方向", "目標和這個職位的發展有交集", "有具體的學習或成長計畫"],
+         "scoring": motivation_scoring},
+    ][:QUESTION_COUNTS["motivation"]]
+
+    return {"resume_dive": resume_dive, "verification": verification, "gap": gap,
+            "behavioral": behavioral, "motivation": motivation}
