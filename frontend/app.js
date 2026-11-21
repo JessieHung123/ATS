@@ -405,13 +405,24 @@ function bindModule3() {
     if (!f) return;
     const fd = new FormData();
     fd.append("file", f);
+    fd.append("use_ai", useAI() ? "true" : "false");
+    $("#analyze-msg").className = "muted small";
     $("#analyze-msg").textContent = "讀取檔案中…";
     try {
       const data = await api("/api/resume/parse", fd, true);
-      $("#r-text").value = data.text;
-      if (!$("#r-name").value) $("#r-name").value = f.name.replace(/\.[^.]+$/, "");
-      $("#analyze-msg").textContent = data.warnings.length ? "⚠ " + data.warnings.join("；") : `已讀取 ${f.name}`;
-    } catch (err) { $("#analyze-msg").textContent = "⚠ " + err.message; }
+      $("#r-text").value = data.extracted_text
+        ? `【AI 整理結果（請核對）】\n${data.extracted_text}\n\n【檔案擷取原文】\n${data.text}`
+        : data.text;
+      if (!$("#r-name").value && data.candidate_name) $("#r-name").value = data.candidate_name;
+      const status = data.source === "ai"
+        ? `AI 已讀取並整理 ${f.name}，請核對內容`
+        : `AI 未執行；目前只顯示從 ${f.name} 擷取的原文。請確認右上角「使用 AI」已勾選，並在「設定」儲存有效的 API Key 後重新上傳。`;
+      $("#analyze-msg").textContent = [...data.warnings, status].join("；");
+      $("#analyze-msg").className = data.source === "ai" ? "muted small" : "warn-box";
+    } catch (err) {
+      $("#analyze-msg").className = "warn-box";
+      $("#analyze-msg").textContent = "⚠ " + err.message;
+    }
     e.target.value = "";
   };
 
@@ -489,7 +500,7 @@ function sortedCandidates() {
 function renderM3() {
   renderSampleResumes();
   const ranked = sortedCandidates();
-  $("#btn-reanalyze").hidden = !ranked.some((c) => c.result.stale);
+  $("#btn-reanalyze").hidden = !ranked.some((c) => c.result.stale || c.analysis.work_analysis_version !== 2);
   $("#ranking").innerHTML = ranked.length ? `<table>
     <thead><tr><th>#</th><th>候選人</th><th class="num">總分</th><th>建議</th><th class="num">句子品質</th><th></th></tr></thead>
     <tbody>${ranked.map((c, i) => `
@@ -535,14 +546,22 @@ function renderDetail() {
     </div></div>`;
 
   const st = a.stats;
-  const sentences = `<div class="card"><h2>「動詞 + 成果 + 量化數據」偵測</h2>
+  const legacyWorkAnalysis = a.work_analysis_version !== 2;
+  const sentences = `<div class="card"><h2>工作經歷句子分析</h2>
+    <p class="muted small">${legacyWorkAnalysis ? "此為舊版工作經歷分析結果，尚未套用修正後的年資計算。" : `${a.sentence_source === "ai" ? "AI 語意分析" : "規則式分析"}；只分析工作經歷，年資依任職日期計算並合併重疊期間（含實習）。`}</p>
+    ${a.sentence_warning ? `<div class="warn-box">${esc(a.sentence_warning)}</div>` : ""}
+    <p><b>累計工作年資：</b>${esc(legacyWorkAnalysis ? "尚未重新分析" : a.experience_duration || "履歷未提供可計算的工作期間")}</p>
+    ${legacyWorkAnalysis ? '<div class="warn-box">按「重新分析全部履歷」更新這份報告；重新分析會將已儲存的履歷內容送至你設定的 AI 服務。</div>' : ""}
+    ${!a.work_section_found ? '<div class="empty">找不到工作經歷區段，因此未進行句子評分。請確認履歷內容有「工作經歷」、「工作經驗」或「經歷」標題。</div>' : `
     <div class="legend-row">
-      <span>🟢 完整句 <b>${st.green}</b></span><span>🟡 只有動作沒成果 <b>${st.yellow}</b></span>
-      <span>🔴 空泛描述 <b>${st.red}</b></span><span class="muted">⚪ 標題／資訊 ${st.info}</span>
-      <span>句子品質 <b>${st.quality}%</b></span>
+      <span>🟢 行動、成果、數據完整 <b>${st.green}</b></span><span>🟡 有行動，仍可補強 <b>${st.yellow}</b></span>
+      <span>🔴 描述空泛或缺乏行動 <b>${st.red}</b></span><span class="muted">ℹ 標題／資訊 <b>${st.info}</b></span>
+      <span>工作經歷句子品質 <b>${st.quality}%</b></span>
     </div>
-    ${a.sentences.map((s) => `<div class="sent ${s.level}"><span aria-label="${s.level}">${LEVEL_ICON[s.level]}</span>
-      <span>${esc(s.text)}</span><span class="why">${esc(s.reason)}</span></div>`).join("")}
+    ${a.sentences.length
+      ? a.sentences.map((s) => `<div class="sent ${s.level}"><span aria-label="${s.level}">${LEVEL_ICON[s.level]}</span>
+        <span>${esc(s.text)}</span><span class="why">${esc(s.reason)}</span></div>`).join("")
+      : '<div class="empty">已找到工作經歷區段，但沒有可分析的句子。</div>'}`}
   </div>`;
 
   const cards = `<div class="card"><h2>職能得分卡</h2><div class="cards">${m.competencies.map((comp) => {

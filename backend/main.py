@@ -2,7 +2,7 @@
 import io
 from pathlib import Path
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -13,7 +13,14 @@ from ats.pdf_parser import parse_pdf
 from . import ai, samples
 from .matrix import DEFAULT_RUBRIC, rule_extract
 from .scoring import compute, rule_check_knockouts, rule_score_items
-from .sentences import analyze_sentences
+from .sentences import (
+    analyze_sentences,
+    apply_ai_classifications,
+    calculate_work_experience_months,
+    classify,
+    format_work_experience,
+    split_sentences,
+)
 
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -99,12 +106,17 @@ def build_matrix(req: MatrixRequest, x_api_key: str | None = Header(default=None
 
 
 @app.post("/api/resume/parse")
-async def parse_resume(file: UploadFile = File(...)):
+async def parse_resume(
+    file: UploadFile = File(...),
+    use_ai: bool = Form(default=True),
+    x_api_key: str | None = Header(default=None),
+    x_model: str | None = Header(default=None),
+):
     data = await file.read()
     name = (file.filename or "").lower()
     if name.endswith(".pdf"):
         parsed = parse_pdf(file.filename, data)
-        return {"text": parsed.text, "warnings": parsed.warnings}
+        text, warnings = parsed.text, list(parsed.warnings)
     if name.endswith(".docx"):
         import docx
 
@@ -116,10 +128,38 @@ async def parse_resume(file: UploadFile = File(...)):
         for table in doc.tables:
             for row in table.rows:
                 lines.append("　".join(c.text for c in row.cells))
-        return {"text": "\n".join(lines), "warnings": []}
-    if name.endswith(".txt"):
-        return {"text": data.decode("utf-8", errors="replace"), "warnings": []}
-    raise HTTPException(400, "僅支援 PDF、Word（.docx）或 .txt")
+        text, warnings = "\n".join(lines), []
+    elif name.endswith(".txt"):
+        text, warnings = data.decode("utf-8", errors="replace"), []
+    elif not name.endswith(".pdf"):
+        raise HTTPException(400, "僅支援 PDF、Word（.docx）或 .txt")
+
+    extracted_text = ""
+    candidate_name = ""
+    source = "rule"
+    pdf_data = data if name.endswith(".pdf") else None
+    client = get_client(x_api_key, x_model) if use_ai else None
+    if client and (text.strip() or pdf_data):
+        try:
+            extracted = ai.extract_resume_information(client, text, pdf_data)
+            extracted_text = extracted["text"]
+            candidate_name = extracted["candidate_name"]
+            if extracted_text.strip():
+                source = "ai"
+            else:
+                warnings.append("AI 未整理出結構化資訊，已保留擷取原文")
+        except AI_ERRORS as e:
+            warnings.append(f"AI 履歷整理失敗，已保留擷取原文：{e}")
+    elif use_ai and not client:
+        warnings.append("未設定 API Key，僅顯示擷取原文")
+
+    return {
+        "text": text,
+        "extracted_text": extracted_text,
+        "candidate_name": candidate_name,
+        "source": source,
+        "warnings": warnings,
+    }
 
 
 @app.post("/api/resume/analyze")
@@ -128,19 +168,63 @@ def analyze_resume(req: AnalyzeRequest, x_api_key: str | None = Header(default=N
     if not req.resume.strip():
         raise HTTPException(400, "履歷內容是空的")
     detector = analyze_sentences(req.resume)
+    experience_months = calculate_work_experience_months(req.resume)
+    detector["experience_months"] = experience_months
+    detector["experience_duration"] = format_work_experience(experience_months)
+    detector["work_analysis_version"] = 2
+    scoring_sentences = [classify(sentence) for sentence in split_sentences(req.resume)]
     client = get_client(x_api_key, x_model) if req.use_ai else None
     warning = None
+    sentence_warning = None
+    sentence_source = "rule"
+    scored = None
     if client:
         try:
             scored = ai.score_resume(client, req.jd, req.matrix, req.resume)
-            return {**scored, **detector, "source": "ai"}
         except AI_ERRORS as e:
             warning = f"AI 評分失敗，改用規則式：{e}"
+        if detector["work_section_found"] and detector["sentences"]:
+            try:
+                evaluations = ai.analyze_work_experience(
+                    client,
+                    [sentence["text"] for sentence in detector["sentences"]],
+                )
+                if apply_ai_classifications(detector, evaluations):
+                    sentence_source = "ai"
+                else:
+                    sentence_warning = "AI 未回傳有效的句子分類，改用規則式分析"
+            except AI_ERRORS as e:
+                sentence_warning = f"AI 工作經歷分析失敗，改用規則式：{e}"
+    elif req.use_ai:
+        sentence_warning = "未設定 API Key，工作經歷句子使用規則式分析"
+
+    response_metadata = {
+        **detector,
+        "sentence_source": sentence_source,
+        "sentence_warning": sentence_warning,
+    }
+    if scored is not None:
+        year_ids = {
+            ko["id"] for ko in req.matrix["knockouts"] if ko["kind"] == "years"
+        }
+        year_results = {
+            ko["id"]: ko for ko in rule_check_knockouts(req.matrix, req.resume)
+            if ko["id"] in year_ids
+        }
+        returned_ids = {ko["id"] for ko in scored["knockouts"]}
+        scored["knockouts"] = [
+            {**ko, **year_results[ko["id"]]} if ko["id"] in year_results else ko
+            for ko in scored["knockouts"]
+        ]
+        scored["knockouts"].extend(
+            result for key, result in year_results.items() if key not in returned_ids
+        )
+        return {**scored, **response_metadata, "source": "ai", "warning": warning}
     return {
         "candidate_name": "",
-        "items": rule_score_items(req.matrix, detector["sentences"]),
+        "items": rule_score_items(req.matrix, scoring_sentences),
         "knockouts": rule_check_knockouts(req.matrix, req.resume),
-        **detector,
+        **response_metadata,
         "source": "rule",
         "warning": warning,
     }
