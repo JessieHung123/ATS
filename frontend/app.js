@@ -7,7 +7,7 @@ const STATUS_TEXT = { met: "✅ 符合", not_met: "❌ 不符合", unknown: "❔
 const STORE_KEY = "ats-teaching-state-v1";
 const $ = (sel) => document.querySelector(sel);
 
-let samples = { jobs: [], resumes: [], presets: {}, rubric: [] };
+let samples = { jobs: [], presets: {}, rubric: [] };
 let aiAvailable = false;
 
 const state = loadState() || {
@@ -22,6 +22,7 @@ const state = loadState() || {
   activeId: null,
   interviews: {},
 };
+state.uploadedResumes = Array.isArray(state.uploadedResumes) ? state.uploadedResumes : [];
 
 // ---------------- 工具 ----------------
 function esc(s) {
@@ -93,7 +94,7 @@ async function refreshStatus() {
       sel.value = s.model;
     }
     const pill = $("#ai-status");
-    pill.textContent = aiAvailable ? `AI 可用（${s.model}）` : "未設定 API Key：規則式模式";
+    pill.textContent = aiAvailable ? `此瀏覽器已設定 API Key（${s.model}，尚未驗證）` : "此瀏覽器未設定 API Key：規則式模式";
     pill.className = "pill " + (aiAvailable ? "ai" : "");
     $("#btn-extract").textContent = aiAvailable && useAI() ? "AI 拆解職能" : "拆解職能（規則式）";
   } catch {
@@ -182,7 +183,6 @@ function renderM1() {
     state.jd = job.jd;
     save();
     renderM1();
-    renderSampleResumes();
   });
   for (const [k, id] of Object.entries(FIELD_IDS)) $("#" + id).value = state.fields[k] || "";
   $("#f-jd").value = state.jd || "";
@@ -401,30 +401,60 @@ async function renderPresetCompare() {
 // ================= 模組 3：履歷評分 =================
 function bindModule3() {
   $("#r-file").onchange = async (e) => {
-    const f = e.target.files[0];
-    if (!f) return;
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("use_ai", useAI() ? "true" : "false");
-    $("#analyze-msg").className = "muted small";
-    $("#analyze-msg").textContent = "讀取檔案中…";
-    try {
-      const data = await api("/api/resume/parse", fd, true);
-      $("#r-text").value = data.extracted_text
-        ? `【AI 整理結果（請核對）】\n${data.extracted_text}\n\n【檔案擷取原文】\n${data.text}`
-        : data.text;
-      if (!$("#r-name").value && data.candidate_name) $("#r-name").value = data.candidate_name;
-      const status = data.source === "ai"
-        ? `AI 已讀取並整理 ${f.name}，請核對內容`
-        : `AI 未執行；目前只顯示從 ${f.name} 擷取的原文。請確認右上角「使用 AI」已勾選，並在「設定」儲存有效的 API Key 後重新上傳。`;
-      $("#analyze-msg").textContent = [...data.warnings, status].join("；");
-      $("#analyze-msg").className = data.source === "ai" ? "muted small" : "warn-box";
-    } catch (err) {
-      $("#analyze-msg").className = "warn-box";
-      $("#analyze-msg").textContent = "⚠ " + err.message;
-    }
+    const files = Array.from(e.target.files || []);
     e.target.value = "";
+    if (!files.length) return;
+
+    const msg = $("#analyze-msg");
+    const failures = [];
+    if (!useAI()) {
+      msg.className = "warn-box";
+      msg.textContent = `已選取 ${files.length} 份履歷，但「使用 AI」未勾選，尚未開始整理。`;
+      return;
+    }
+    if (!aiAvailable) {
+      msg.className = "warn-box";
+      msg.textContent = `已選取 ${files.length} 份履歷，但此瀏覽器未設定 API Key，尚未送出檔案。請在「設定」儲存金鑰後重試。`;
+      return;
+    }
+    msg.className = "muted small";
+    for (const [index, file] of files.entries()) {
+      msg.textContent = `AI 整理履歷中（${index + 1}/${files.length}）：${file.name}`;
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("use_ai", useAI() ? "true" : "false");
+      try {
+        const data = await api("/api/resume/parse", fd, true);
+        const text = data.extracted_text?.trim();
+        if (data.source !== "ai" || !text) {
+          throw new Error(data.warnings?.join("；") || "AI 未回傳整理後的履歷");
+        }
+        const fileLabel = file.name.replace(/\.[^.]+$/, "");
+        state.uploadedResumes.push({
+          id: uid(),
+          name: data.candidate_name?.trim() || `未辨識姓名（${fileLabel}）`,
+          text,
+          fileName: file.name,
+        });
+        save();
+        renderUploadedResumes();
+      } catch (err) {
+        failures.push(`${file.name}：${err.message}`);
+      }
+    }
+    const completed = files.length - failures.length;
+    msg.textContent = [`AI 已整理 ${completed}/${files.length} 份履歷。`, ...failures].join("\n");
+    msg.className = failures.length ? "warn-box" : "muted small";
   };
+
+  $("#uploaded-resumes").addEventListener("click", (e) => {
+    const button = e.target.closest("[data-uploaded-resume]");
+    if (!button) return;
+    const resume = state.uploadedResumes.find((item) => item.id === button.dataset.uploadedResume);
+    if (!resume) return;
+    $("#r-name").value = resume.name;
+    $("#r-text").value = resume.text;
+  });
 
   $("#btn-analyze").onclick = (e) => withBusy(e.target, $("#analyze-msg"), "分析中…", async () => {
     if (!state.matrix) throw new Error("請先到「職缺拆解」產生職能矩陣");
@@ -481,24 +511,13 @@ async function rescore() {
   if ($("#m2").classList.contains("active")) renderPresetCompare();
 }
 
-function renderSampleResumes() {
-  const list = [...samples.resumes].sort((a, b) => (b.job_id === state.jobId) - (a.job_id === state.jobId));
-  $("#sample-resumes").innerHTML = '<span class="muted small">範例履歷：</span>' + list
-    .map((r) => `<button class="btn small ${r.job_id === state.jobId ? "" : "ghost"}" data-resume="${r.id}">${esc(r.label)}</button>`).join("");
-  $("#sample-resumes").querySelectorAll("[data-resume]").forEach((b) => b.onclick = () => {
-    const r = samples.resumes.find((x) => x.id === b.dataset.resume);
-    $("#r-name").value = r.name;
-    $("#r-text").value = r.text;
-  });
-}
-
 function sortedCandidates() {
   return state.candidates.filter((c) => c.result)
     .sort((a, b) => (a.result.eliminated - b.result.eliminated) || (b.result.total - a.result.total));
 }
 
 function renderM3() {
-  renderSampleResumes();
+  renderUploadedResumes();
   const ranked = sortedCandidates();
   $("#btn-reanalyze").hidden = !ranked.some((c) => c.result.stale || c.analysis.work_analysis_version !== 2);
   $("#ranking").innerHTML = ranked.length ? `<table>
@@ -514,6 +533,15 @@ function renderM3() {
     <p class="muted small">點選列查看詳細報告。共 ${ranked.length} 份，模擬 HR 一次比較多份履歷。</p>`
     : '<div class="empty">尚無候選人。</div>';
   renderDetail();
+}
+
+function renderUploadedResumes() {
+  const box = $("#uploaded-resumes");
+  box.hidden = !state.uploadedResumes.length;
+  box.innerHTML = state.uploadedResumes.length
+    ? '<span class="muted small">AI 整理後的履歷：</span>' + state.uploadedResumes
+      .map((resume) => `<button type="button" class="btn small" data-uploaded-resume="${esc(resume.id)}" title="${esc(resume.fileName)}">${esc(resume.name)}</button>`).join("")
+    : "";
 }
 
 function renderDetail() {

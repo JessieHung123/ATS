@@ -14,9 +14,9 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --port 8000
 ```
 
-開啟 http://localhost:8000 。
+開啟 http://127.0.0.1:8000 。請固定使用 `127.0.0.1`；`localhost` 會自動轉址，避免不同網址各自保存 API Key。
 
-- **有 Gemini API Key**（到 [Google AI Studio](https://aistudio.google.com/apikey) 免費申請；在右上角「設定」輸入，或設定環境變數 `GEMINI_API_KEY`）：職能拆解、逐職能評分、面試問題由 Google Gemini 產生；模型可在「設定」切換：`gemini-3.5-flash-lite`（預設，最快）、`gemini-3.6-flash`（平衡）、`gemini-3.8-flash`（最聰明但較慢），也可用環境變數 `GEMINI_MODEL` 指定預設值。免費版有每日使用上限，且內容可能被 Google 用於改善產品，請只使用虛構履歷。
+- **有 Gemini API Key**（到 [Google AI Studio](https://aistudio.google.com/apikey) 免費申請；在右上角「設定」輸入，或設定環境變數 `GEMINI_API_KEY`）：職能拆解、逐職能評分、面試問題由 Google Gemini 產生；模型可在「設定」切換：`gemini-3.5-flash-lite`（預設，最快）、`gemini-3.6-flash`（平衡）、`gemini-3.8-flash`（最聰明但較慢），也可用環境變數 `GEMINI_MODEL` 指定預設值。瀏覽器輸入的金鑰只存在該瀏覽器的 localStorage；VS Code 內建瀏覽器與 Chrome 需各自儲存。免費版有每日使用上限，且內容可能被 Google 用於改善產品，請只使用虛構履歷。
 - **沒有 API Key** 或取消勾選「使用 AI」：全部改用規則式（職能字典、關鍵字比對、範本題目），完全不需連網或 API Key。
 - 「動詞 + 成果 + 量化數據」偵測器永遠是規則式，判斷理由逐句列出，方便學生理解。
 - 資料存在瀏覽器 localStorage，重新整理不會遺失；「設定 → 清除所有資料」可重來。
@@ -27,7 +27,7 @@ python -m venv .venv
 |---|---|
 | 1 職缺拆解 | 3 個範例職缺一鍵帶入；結構化欄位（職稱、年資、學歷、必備、加分）；拆解為硬實力／軟實力／門檻條件；可新增、刪除、改名職能 |
 | 2 權重與評分標準 | 專業技能／專案經驗／軟實力權重滑桿（總和固定 100%）；均衡／重技術／重經驗／重潛力預設組合；同一批履歷在各組合下的分數與名次變化；0–3 分 Rubric（全域與個別職能）；門檻「直接淘汰／扣分」 |
-| 3 履歷評分 | 貼上文字或上傳 PDF／Word；啟用 AI 且設定 API Key 時，PDF 會直接交由 AI 閱讀並整理姓名、電話、Email、地址、學歷、工作經歷、技能等資訊（掃描型 PDF 也會嘗試辨識），並保留可擷取原文供校對；逐句 🟢🟡🔴 標色；每個職能的得分卡（分數、佐證原文、判斷理由）；Match Score、雷達圖與大類長條圖；多份履歷排名；缺口分析 |
+| 3 履歷評分 | 貼上文字或一次上傳多份 PDF／Word；啟用 AI 且設定 API Key 時，AI 會整理履歷資訊（掃描型 PDF 也會嘗試辨識），並以候選人姓名按鈕保存整理結果，點選即可載入姓名與整理後的履歷內容；逐句 🟢🟡🔴 標色；每個職能的得分卡（分數、佐證原文、判斷理由）；Match Score、雷達圖與大類長條圖；多份履歷排名；缺口分析 |
 | 4 面試問題 | 驗證型、補洞型、STAR 行為面試題，每題附「面試官想聽到什麼」與評分要點；可列印 |
 
 ### 計分方式
