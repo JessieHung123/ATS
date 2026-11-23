@@ -104,12 +104,18 @@ def _create(gc: GeminiClient, system: str, user: str, schema: dict, thinking: di
 
 def _friendly(code: int | None, detail: str, model: str) -> str:
     low = detail.lower()
-    if code in (400, 401, 403) and "api key" in low:
+    if code == 401:
+        return "API Key 無效或已停用，請到 Google AI Studio 確認"
+    if code == 403:
+        if "api key" in low or "api_key" in low or "credential" in low:
+            return "API Key 無效或受限制，請到 Google AI Studio 確認"
+        return "此 API Key 沒有存取 Gemini API 的權限，請檢查金鑰所屬專案與 API 設定"
+    if code == 400 and ("api key" in low or "api_key" in low):
         return "API Key 無效，請到 Google AI Studio 確認"
     if code == 404 or (code == 400 and "model" in low and ("not found" in low or "not supported" in low)):
         return f"目前無法使用模型 {model}，請在「設定」換一個模型"
     if code == 429:
         return f"{model} 已達免費額度的使用上限，請稍後再試或在「設定」換一個模型"
     if code is not None and code >= 500:
-        return "Gemini 伺服器暫時異常，請稍後再試"
+        return f"Gemini 伺服器暫時異常（HTTP {code}）；已自動重試，通常不是 API Key 問題，請稍後再試"
     return f"Gemini 呼叫失敗（{code}）：{detail[:300]}"

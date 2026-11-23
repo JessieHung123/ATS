@@ -2,8 +2,8 @@
 import io
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,15 @@ from .sentences import (
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
 app = FastAPI(title="ATS 職能評分教學系統")
+
+
+@app.middleware("http")
+async def use_canonical_localhost(request: Request, call_next):
+    if request.url.hostname == "localhost" and request.url.path == "/":
+        netloc = request.url.netloc.replace("localhost", "127.0.0.1", 1)
+        return RedirectResponse(str(request.url.replace(netloc=netloc)), status_code=307)
+    return await call_next(request)
+
 
 PRESETS = {
     "balanced": {"label": "均衡型", "weights": {"skill": 40, "experience": 35, "soft": 25}},
@@ -147,11 +156,11 @@ async def parse_resume(
             if extracted_text.strip():
                 source = "ai"
             else:
-                warnings.append("AI 未整理出結構化資訊，已保留擷取原文")
+                warnings.append("AI 未整理出結構化資訊")
         except AI_ERRORS as e:
-            warnings.append(f"AI 履歷整理失敗，已保留擷取原文：{e}")
+            warnings.append(f"AI 履歷整理失敗：{e}")
     elif use_ai and not client:
-        warnings.append("未設定 API Key，僅顯示擷取原文")
+        warnings.append("未設定 API Key，無法整理履歷")
 
     return {
         "text": text,
