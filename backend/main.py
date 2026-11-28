@@ -1,10 +1,14 @@
 """ATS 教學系統後端（FastAPI）。執行：uvicorn backend.main:app --reload"""
+import base64
+import binascii
 import io
+import os
 import re
+import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -12,8 +16,9 @@ from ats.gemini import MODELS, env_key, make_client, resolve_model
 from ats.pdf_parser import parse_pdf
 
 from . import ai, samples
+from .jobs import complete_matrix, rule_job
 from .matrix import DEFAULT_RUBRIC, rule_extract
-from .scoring import compute, rule_check_knockouts, rule_score_items
+from .scoring import compute, rule_check_knockouts, rule_score_items, validate_weights
 from .sentences import (
     analyze_sentences,
     apply_ai_classifications,
@@ -26,6 +31,43 @@ from .sentences import (
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
 app = FastAPI(title="ATS 職能評分教學系統")
+
+
+# ---------------- 密碼保護（部署到 Render 等公開網址時使用） ----------------
+# 設定環境變數 APP_PASSWORD 才會啟用；本機用 start.bat 執行時沒設定，就跟原本一樣不用密碼。
+# 瀏覽器會跳出登入視窗：使用者名稱隨意填，密碼填 APP_PASSWORD。
+PUBLIC_PATHS = {"/healthz"}  # Render 健康檢查用，不需要密碼
+
+
+def _password_ok(header: str, password: str) -> bool:
+    scheme, _, encoded = header.partition(" ")
+    if scheme.lower() != "basic" or not encoded:
+        return False
+    try:
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return False
+    _, _, given = decoded.partition(":")
+    return secrets.compare_digest(given.encode("utf-8"), password.encode("utf-8"))
+
+
+@app.middleware("http")
+async def require_password(request: Request, call_next):
+    password = os.environ.get("APP_PASSWORD", "")
+    if not password or request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+    if _password_ok(request.headers.get("authorization", ""), password):
+        return await call_next(request)
+    return PlainTextResponse(
+        "需要密碼才能使用 ATS 系統。使用者名稱隨意填，密碼請向組員索取。",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="ATS", charset="UTF-8"'},
+    )
+
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
 
 
 @app.middleware("http")

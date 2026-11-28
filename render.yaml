@@ -1,0 +1,19 @@
+# Render 部署設定（Blueprint）。步驟見 DEPLOY.md。
+services:
+  - type: web
+    name: ats-hr
+    runtime: python
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # 以下兩個是祕密，建立服務時 Render 會請你在網頁上填寫，不會存進 GitHub
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: APP_PASSWORD
+        sync: false

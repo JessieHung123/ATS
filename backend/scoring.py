@@ -1,4 +1,5 @@
 """評分：規則式履歷分析（無 API 時）＋ 權重加總、門檻、缺口分析（永遠由這裡計算）。"""
+import math
 import re
 
 from ats.keywords import _pattern
