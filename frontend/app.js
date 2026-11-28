@@ -8,7 +8,7 @@ const STATUS_TEXT = { met: "✅ 符合", not_met: "❌ 不符合", unknown: "❔
 const STORE_KEY = "ats-teaching-state-v1";
 const $ = (sel) => document.querySelector(sel);
 
-let samples = { jobs: [], resumes: [], presets: {}, rubric: [] };
+let samples = { jobs: [], presets: {}, rubric: [] };
 let aiAvailable = false;
 
 const state = loadState() || {
@@ -23,6 +23,7 @@ const state = loadState() || {
   activeId: null,
   interviews: {},
 };
+state.uploadedResumes = Array.isArray(state.uploadedResumes) ? state.uploadedResumes : [];
 
 // ---------------- 工具 ----------------
 function esc(s) {
@@ -98,7 +99,7 @@ async function refreshStatus() {
       sel.value = s.model;
     }
     const pill = $("#ai-status");
-    pill.textContent = aiAvailable ? `API 已設定，尚未驗證呼叫（${s.model}）` : "未設定 API Key：規則式模式";
+    pill.textContent = aiAvailable ? `此瀏覽器已設定 API Key（${s.model}，尚未驗證）` : "此瀏覽器未設定 API Key：規則式模式";
     pill.className = "pill " + (aiAvailable ? "ai" : "");
     $("#btn-extract").textContent = aiAvailable && useAI() ? "AI 拆解職能" : "拆解職能（規則式）";
   } catch {
@@ -307,7 +308,6 @@ function renderM1() {
     jobEdited();
     save();
     renderM1();
-    renderSampleResumes();
   });
   for (const [k, id] of Object.entries(FIELD_IDS)) $("#" + id).value = state.fields[k] || "";
   $("#f-jd").value = state.jd || "";
@@ -595,19 +595,60 @@ async function renderPresetCompare() {
 // ================= 模組 3：履歷評分 =================
 function bindModule3() {
   $("#r-file").onchange = async (e) => {
-    const f = e.target.files[0];
-    if (!f) return;
-    const fd = new FormData();
-    fd.append("file", f);
-    $("#analyze-msg").textContent = "讀取檔案中…";
-    try {
-      const data = await api("/api/resume/parse", fd, true);
-      $("#r-text").value = data.text;
-      if (!$("#r-name").value) $("#r-name").value = f.name.replace(/\.[^.]+$/, "");
-      $("#analyze-msg").textContent = data.warnings.length ? "⚠ " + data.warnings.join("；") : `已讀取 ${f.name}`;
-    } catch (err) { $("#analyze-msg").textContent = "⚠ " + err.message; }
+    const files = Array.from(e.target.files || []);
     e.target.value = "";
+    if (!files.length) return;
+
+    const msg = $("#analyze-msg");
+    const failures = [];
+    if (!useAI()) {
+      msg.className = "warn-box";
+      msg.textContent = `已選取 ${files.length} 份履歷，但「使用 AI」未勾選，尚未開始整理。`;
+      return;
+    }
+    if (!aiAvailable) {
+      msg.className = "warn-box";
+      msg.textContent = `已選取 ${files.length} 份履歷，但此瀏覽器未設定 API Key，尚未送出檔案。請在「設定」儲存金鑰後重試。`;
+      return;
+    }
+    msg.className = "muted small";
+    for (const [index, file] of files.entries()) {
+      msg.textContent = `AI 整理履歷中（${index + 1}/${files.length}）：${file.name}`;
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("use_ai", useAI() ? "true" : "false");
+      try {
+        const data = await api("/api/resume/parse", fd, true);
+        const text = data.extracted_text?.trim();
+        if (data.source !== "ai" || !text) {
+          throw new Error(data.warnings?.join("；") || "AI 未回傳整理後的履歷");
+        }
+        const fileLabel = file.name.replace(/\.[^.]+$/, "");
+        state.uploadedResumes.push({
+          id: uid(),
+          name: data.candidate_name?.trim() || `未辨識姓名（${fileLabel}）`,
+          text,
+          fileName: file.name,
+        });
+        save();
+        renderUploadedResumes();
+      } catch (err) {
+        failures.push(`${file.name}：${err.message}`);
+      }
+    }
+    const completed = files.length - failures.length;
+    msg.textContent = [`AI 已整理 ${completed}/${files.length} 份履歷。`, ...failures].join("\n");
+    msg.className = failures.length ? "warn-box" : "muted small";
   };
+
+  $("#uploaded-resumes").addEventListener("click", (e) => {
+    const button = e.target.closest("[data-uploaded-resume]");
+    if (!button) return;
+    const resume = state.uploadedResumes.find((item) => item.id === button.dataset.uploadedResume);
+    if (!resume) return;
+    $("#r-name").value = resume.name;
+    $("#r-text").value = resume.text;
+  });
 
   $("#btn-analyze").onclick = (e) => withBusy(e.target, $("#analyze-msg"), "分析中…", async () => {
     requireValidWeights("進行履歷評分");
@@ -686,17 +727,6 @@ async function rescore() {
   if ($("#m2").classList.contains("active")) renderPresetCompare();
 }
 
-function renderSampleResumes() {
-  const list = [...samples.resumes].sort((a, b) => (b.job_id === state.jobId) - (a.job_id === state.jobId));
-  $("#sample-resumes").innerHTML = '<span class="muted small">範例履歷：</span>' + list
-    .map((r) => `<button class="btn small ${r.job_id === state.jobId ? "" : "ghost"}" data-resume="${r.id}">${esc(r.label)}</button>`).join("");
-  $("#sample-resumes").querySelectorAll("[data-resume]").forEach((b) => b.onclick = () => {
-    const r = samples.resumes.find((x) => x.id === b.dataset.resume);
-    $("#r-name").value = r.name;
-    $("#r-text").value = r.text;
-  });
-}
-
 function sortedCandidates() {
   if (weightWarningMessage()) return [];
   return state.candidates.filter((c) => c.result)
@@ -704,9 +734,9 @@ function sortedCandidates() {
 }
 
 function renderM3() {
-  renderSampleResumes();
+  renderUploadedResumes();
   const ranked = sortedCandidates();
-  $("#btn-reanalyze").hidden = !ranked.some((c) => c.result.stale);
+  $("#btn-reanalyze").hidden = !ranked.some((c) => c.result.stale || c.analysis.work_analysis_version !== 2);
   $("#ranking").innerHTML = ranked.length ? `<table>
     <thead><tr><th>#</th><th>候選人</th><th class="num">總分</th><th>建議</th><th class="num">句子品質</th><th></th></tr></thead>
     <tbody>${ranked.map((c, i) => `
@@ -722,6 +752,15 @@ function renderM3() {
       ? `<div class="warn-box weight-warning" role="alert">${esc(weightWarningMessage())} 履歷評分已暫停；調整權重後即可繼續。</div>`
       : '<div class="empty">尚無候選人。</div>';
   renderDetail();
+}
+
+function renderUploadedResumes() {
+  const box = $("#uploaded-resumes");
+  box.hidden = !state.uploadedResumes.length;
+  box.innerHTML = state.uploadedResumes.length
+    ? '<span class="muted small">AI 整理後的履歷：</span>' + state.uploadedResumes
+      .map((resume) => `<button type="button" class="btn small" data-uploaded-resume="${esc(resume.id)}" title="${esc(resume.fileName)}">${esc(resume.name)}</button>`).join("")
+    : "";
 }
 
 function renderDetail() {
@@ -758,14 +797,22 @@ function renderDetail() {
     </div></div>`;
 
   const st = a.stats;
-  const sentences = `<div class="card"><h2>「動詞 + 成果 + 量化數據」偵測</h2>
+  const legacyWorkAnalysis = a.work_analysis_version !== 2;
+  const sentences = `<div class="card"><h2>工作經歷句子分析</h2>
+    <p class="muted small">${legacyWorkAnalysis ? "此為舊版工作經歷分析結果，尚未套用修正後的年資計算。" : `${a.sentence_source === "ai" ? "AI 語意分析" : "規則式分析"}；只分析工作經歷，年資依任職日期計算並合併重疊期間（含實習）。`}</p>
+    ${a.sentence_warning ? `<div class="warn-box">${esc(a.sentence_warning)}</div>` : ""}
+    <p><b>累計工作年資：</b>${esc(legacyWorkAnalysis ? "尚未重新分析" : a.experience_duration || "履歷未提供可計算的工作期間")}</p>
+    ${legacyWorkAnalysis ? '<div class="warn-box">按「重新分析全部履歷」更新這份報告；重新分析會將已儲存的履歷內容送至你設定的 AI 服務。</div>' : ""}
+    ${!a.work_section_found ? '<div class="empty">找不到工作經歷區段，因此未進行句子評分。請確認履歷內容有「工作經歷」、「工作經驗」或「經歷」標題。</div>' : `
     <div class="legend-row">
-      <span>🟢 完整句 <b>${st.green}</b></span><span>🟡 只有動作沒成果 <b>${st.yellow}</b></span>
-      <span>🔴 空泛描述 <b>${st.red}</b></span><span class="muted">⚪ 標題／資訊 ${st.info}</span>
-      <span>句子品質 <b>${st.quality}%</b></span>
+      <span>🟢 行動、成果、數據完整 <b>${st.green}</b></span><span>🟡 有行動，仍可補強 <b>${st.yellow}</b></span>
+      <span>🔴 描述空泛或缺乏行動 <b>${st.red}</b></span><span class="muted">ℹ 標題／資訊 <b>${st.info}</b></span>
+      <span>工作經歷句子品質 <b>${st.quality}%</b></span>
     </div>
-    ${a.sentences.map((s) => `<div class="sent ${s.level}"><span aria-label="${s.level}">${LEVEL_ICON[s.level]}</span>
-      <span>${esc(s.text)}</span><span class="why">${esc(s.reason)}</span></div>`).join("")}
+    ${a.sentences.length
+      ? a.sentences.map((s) => `<div class="sent ${s.level}"><span aria-label="${s.level}">${LEVEL_ICON[s.level]}</span>
+        <span>${esc(s.text)}</span><span class="why">${esc(s.reason)}</span></div>`).join("")
+      : '<div class="empty">已找到工作經歷區段，但沒有可分析的句子。</div>'}`}
   </div>`;
 
   const cards = `<div class="card"><h2>職能得分卡</h2><div class="cards">${m.competencies.map((comp) => {

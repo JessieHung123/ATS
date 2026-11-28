@@ -26,6 +26,7 @@
         </label>
         <p class="muted small">太慢或額度用完時，可以換一個模型試試。</p>
         <p class="muted small">免費申請：<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>。免費版的內容可能被 Google 用於改善產品，請只使用虛構履歷。</p>
+        <p class="muted small">金鑰只存在目前瀏覽器；VS Code 內建瀏覽器與 Chrome 不共用設定，需各自儲存一次。不同網址（例如 localhost 與 127.0.0.1）也不共用；localhost 會自動轉到 127.0.0.1。</p>
         <div class="row">
           <button id="save-key" class="btn">儲存</button>
           <button id="reset-all" class="btn ghost danger">清除所有資料</button>
@@ -130,19 +131,19 @@
       <div>
         <div class="card">
           <h2>輸入履歷</h2>
-          <div class="row wrap" id="sample-resumes"><span class="muted small">範例履歷：</span></div>
-          <label>候選人姓名（可留空）<input id="r-name"></label>
+          <label>候選人姓名（AI 辨識後自動填入，可修改）<input id="r-name"></label>
           <label>履歷內容<textarea id="r-text" rows="12" placeholder="貼上履歷文字…"></textarea></label>
           <div class="row space">
-            <label class="btn ghost file-btn">上傳 PDF / Word<input type="file" id="r-file" accept=".pdf,.docx,.txt" hidden></label>
+            <label class="btn ghost file-btn">上傳 PDF / Word（可多選）<input type="file" id="r-file" accept=".pdf,.docx,.txt" multiple hidden></label>
             <button id="btn-analyze" class="btn primary">分析這份履歷</button>
           </div>
           <div id="analyze-msg" class="muted small"></div>
+          <div id="uploaded-resumes" class="row wrap" hidden></div>
         </div>
         <div class="card">
           <div class="row space">
             <h2>候選人排名</h2>
-            <button id="btn-reanalyze" class="btn small" hidden>職能已變更，全部重新分析</button>
+            <button id="btn-reanalyze" class="btn small" hidden>重新分析全部履歷</button>
           </div>
           <div id="ranking"><div class="empty">尚無候選人。</div></div>
         </div>
