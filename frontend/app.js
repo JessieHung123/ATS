@@ -2,6 +2,7 @@
 "use strict";
 
 const GROUPS = { skill: "專業技能", experience: "專案經驗", soft: "軟實力" };
+const CATEGORIES = { hard: "硬實力", tools: "工具技能", knowledge: "專業知識", soft: "工作相關軟實力" };
 const LEVEL_ICON = { green: "🟢", yellow: "🟡", red: "🔴", info: "⚪" };
 const STATUS_TEXT = { met: "✅ 符合", not_met: "❌ 不符合", unknown: "❔ 待確認" };
 const STORE_KEY = "ats-teaching-state-v1";
@@ -44,14 +45,18 @@ function useAI() { return $("#use-ai").checked; }
 
 async function api(path, body, isForm = false) {
   const headers = {};
-  const key = localStorage.getItem("ats-gemini-key");
-  if (key) headers["X-API-Key"] = key;
   const model = localStorage.getItem("ats-gemini-model");
   if (model) headers["X-Model"] = model;
   const opts = { method: body ? "POST" : "GET", headers };
   if (body && isForm) opts.body = body;
   else if (body) { headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
-  const res = await fetch(path, opts);
+  if (path === "/api/job/autofill") opts.signal = AbortSignal.timeout(200000);
+  let res;
+  try { res = await fetch(path, opts); }
+  catch (e) {
+    if (path !== "/api/job/autofill") throw e;
+    throw new Error(e.name === "TimeoutError" ? "AI 填寫等待逾時，請稍後重試；原有內容已保留。" : "無法連線至 ATS 後端，請確認 8765 服務仍在執行；原有內容已保留。");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `請求失敗（${res.status}）`);
   return data;
@@ -93,7 +98,7 @@ async function refreshStatus() {
       sel.value = s.model;
     }
     const pill = $("#ai-status");
-    pill.textContent = aiAvailable ? `AI 可用（${s.model}）` : "未設定 API Key：規則式模式";
+    pill.textContent = aiAvailable ? `API 已設定，尚未驗證呼叫（${s.model}）` : "未設定 API Key：規則式模式";
     pill.className = "pill " + (aiAvailable ? "ai" : "");
     $("#btn-extract").textContent = aiAvailable && useAI() ? "AI 拆解職能" : "拆解職能（規則式）";
   } catch {
@@ -115,9 +120,7 @@ function showTab(id) {
 }
 
 function bindSettings() {
-  $("#api-key").value = localStorage.getItem("ats-gemini-key") || "";
   $("#save-key").onclick = async () => {
-    localStorage.setItem("ats-gemini-key", $("#api-key").value.trim());
     if ($("#model-select").value) localStorage.setItem("ats-gemini-model", $("#model-select").value);
     await refreshStatus();
     $(".settings").open = false;
@@ -140,15 +143,133 @@ function renderAll() {
 // ================= 模組 1：職缺 → 職能矩陣 =================
 const FIELD_IDS = { title: "f-title", years: "f-years", education: "f-education", required: "f-required", bonus: "f-bonus" };
 
+function jobSignature() { return JSON.stringify([state.fields, state.jd]); }
+function jobEdited() {
+  invalidateAnalyses();
+  $("#job-msg").textContent = "職缺內容已變更，請重新確認並拆解職能。";
+  save();
+  rescoreSoon();
+}
+function invalidateAnalyses() {
+  state.candidates.forEach((c) => { if (c.analysis) c.analysis.stale = true; });
+  state.interviews = {};
+}
+
+function bindJobDraft() {
+  $("#btn-job-autofill").onclick = (e) => withBusy(e.currentTarget, $("#job-msg"), "AI 填寫中…", async () => {
+    // 讀取實際畫面，兼容瀏覽器自動填入但未觸發 input 的情況。
+    for (const [k, id] of Object.entries(FIELD_IDS)) state.fields[k] = $("#" + id).value;
+    state.jd = $("#f-jd").value;
+    if (!state.fields.title.trim()) throw new Error("請先輸入職稱");
+    if (!useAI()) throw new Error("請先開啟「使用 AI」");
+    if (Object.entries(state.fields).every(([k, v]) => k === "title" || v.trim()) && state.jd.trim()) {
+      $("#job-msg").textContent = "所有欄位皆已填寫，沒有需要補齊的空白。";
+      return;
+    }
+    const signature = jobSignature();
+    $("#job-msg").textContent = "正在向 Gemini 產生建議草稿，請稍候…";
+    $("#ai-status").textContent = "Gemini 請求中…";
+    let data;
+    try {
+      data = await api("/api/job/autofill", { jd: state.jd, fields: state.fields, use_ai: true });
+      if (data.source !== "ai" || !["years", "education", "required", "bonus"].every((k) => typeof data.fields?.[k] === "string" && data.fields[k].trim()) || typeof data.jd !== "string" || !data.jd.trim()) {
+        throw new Error("API 回傳格式不完整，未套用任何內容。");
+      }
+    } catch (err) {
+      $("#ai-status").textContent = "AI 填寫失敗，請查看下方錯誤";
+      $("#ai-status").className = "pill";
+      throw err;
+    }
+    $("#ai-status").textContent = `Gemini 呼叫成功（${data.model || $("#model-select").value}）`;
+    $("#ai-status").className = "pill ai";
+    if (signature !== jobSignature()) throw new Error("輸入內容已變更，請重新填寫；本次結果未套用。");
+    for (const k of ["years", "education", "required", "bonus"]) {
+      if (!state.fields[k].trim()) state.fields[k] = data.fields[k];
+    }
+    if (!state.jd.trim()) state.jd = data.jd;
+    state.jobDraft = null;
+    state.confirmedJob = null;
+    state.autofillNotice = data.notice || "AI 建議草稿，尚待 HR 確認。";
+    jobEdited();
+    renderM1();
+    $("#job-msg").textContent = "AI 已補齊空白欄位，可直接修改或刪除文字；檢查後按「確認目前職缺內容」，再拆解職能。";
+  });
+  $("#btn-confirm-job").onclick = () => {
+    if (!state.jd.trim() && !state.fields.required.trim()) {
+      $("#job-msg").textContent = "請先輸入條件，或產生草稿並確認套用。";
+      return;
+    }
+    state.confirmedJob = jobSignature();
+    $("#job-msg").textContent = "已確認目前職缺內容，可拆解職能；修改內容後需重新確認。";
+    save();
+  };
+  $("#btn-job-suggest").onclick = (e) => withBusy(e.target, $("#job-msg"), "產生草稿中…", async () => {
+    const signature = jobSignature();
+    const data = await api("/api/job/suggest", { jd: state.jd, fields: state.fields, use_ai: useAI() });
+    if (signature !== jobSignature()) throw new Error("輸入內容已變更，請重新產生草稿。");
+    state.jobDraft = { ...data, signature };
+    renderJobDraft();
+    $("#job-msg").textContent = data.warning || "草稿尚未套用，請逐項審閱。";
+  });
+  const box = $("#job-draft");
+  box.addEventListener("input", (e) => {
+    if (e.target.dataset.section) state.jobDraft.draft[e.target.dataset.section][Number(e.target.dataset.index)] = e.target.value;
+  });
+  box.addEventListener("click", (e) => {
+    const el = e.target.closest("button");
+    if (!el || !state.jobDraft) return;
+    if (el.dataset.draftAdd) state.jobDraft.draft[el.dataset.draftAdd].push("");
+    else if (el.dataset.draftDel) state.jobDraft.draft[el.dataset.draftDel].splice(Number(el.dataset.index), 1);
+    else if (el.id === "apply-job-draft") {
+      if (state.jobDraft.signature !== jobSignature()) {
+        $("#job-msg").textContent = "職缺已變更，請重新產生草稿。";
+        return;
+      }
+      const draft = state.jobDraft.draft;
+      const lines = Object.entries({ responsibilities: "工作職責", skills: "技能要求", abilities: "工作相關能力" })
+        .map(([k,l]) => `【${l}】\n${draft[k].map((v) => v.trim()).filter(Boolean).join("\n")}`);
+      if (!Object.values(draft).some((values) => values.some((v) => v.trim()))) {
+        $("#job-msg").textContent = "草稿不能全部空白。";
+        return;
+      }
+      // 保留原始 JD 與人資輸入條件；草稿是經人工確認的補充內容。
+      state.jd = [state.jd, `【HR 確認的${state.jobDraft.basis === "title" ? "一般建議" : "JD 建議"}】`, ...lines].filter(Boolean).join("\n\n");
+      state.confirmedJob = jobSignature();
+      state.jobDraft = null;
+      invalidateAnalyses();
+      rescoreSoon();
+      save();
+      renderM1();
+      $("#job-msg").textContent = "已確認並套用，可拆解職能。";
+    }
+    renderJobDraft();
+  });
+}
+
+function renderJobDraft() {
+  const box = $("#job-draft"), data = state.jobDraft;
+  box.hidden = !data;
+  if (!data) { box.innerHTML = ""; return; }
+  box.innerHTML = `<p class="callout">${esc(data.notice)}（${data.source === "ai" ? "AI" : "規則式"}草稿）。可新增、刪除與修改；確認後才套用。</p>`
+    + Object.entries({ responsibilities: "工作職責", skills: "技能要求", abilities: "工作相關能力" }).map(([k,l]) =>
+      `<h3>${l}</h3>${data.draft[k].map((v,i) => `<div class="row"><input style="flex:1;min-width:0" aria-label="${l} ${i+1}" data-section="${k}" data-index="${i}" value="${esc(v)}"><button class="icon-btn" aria-label="刪除${l}" data-draft-del="${k}" data-index="${i}">✕</button></div>`).join("")}<button class="btn small" data-draft-add="${k}">＋ 新增${l}</button>`).join("")
+    + '<div class="row"><button class="btn primary" id="apply-job-draft">確認並套用全部草稿</button></div>';
+}
+
 function bindModule1() {
+  bindJobDraft();
   for (const [k, id] of Object.entries(FIELD_IDS)) {
-    $("#" + id).addEventListener("input", (e) => { state.fields[k] = e.target.value; save(); });
+    $("#" + id).addEventListener("input", (e) => { state.fields[k] = e.target.value; jobEdited(); });
   }
-  $("#f-jd").addEventListener("input", (e) => { state.jd = e.target.value; save(); });
+  $("#f-jd").addEventListener("input", (e) => { state.jd = e.target.value; jobEdited(); });
 
   $("#btn-extract").onclick = (e) => withBusy(e.target, $("#extract-msg"), "拆解中…", async () => {
+    if (state.confirmedJob !== jobSignature()) throw new Error("請先確認目前職缺內容，再拆解職能。");
+    const signature = jobSignature();
     const data = await api("/api/matrix", { jd: state.jd, fields: state.fields, use_ai: useAI() });
+    if (signature !== jobSignature()) throw new Error("職缺已變更，請重新確認並拆解。");
     state.matrix = data.matrix;
+    state.matrixJob = signature;
     state.matrixSource = data.source;
     $("#extract-msg").textContent = data.warning ? "⚠ " + data.warning
       : `完成：${data.matrix.competencies.length} 項職能、${data.matrix.knockouts.length} 項門檻。`;
@@ -172,6 +293,9 @@ function bindModule1() {
 }
 
 function renderM1() {
+  $("#autofill-notice").hidden = !state.autofillNotice;
+  $("#autofill-notice").textContent = state.autofillNotice || "";
+  renderJobDraft();
   const box = $("#sample-jobs");
   box.innerHTML = '<span class="muted small">範例職缺：</span>' + samples.jobs
     .map((j) => `<button class="btn small ${state.jobId === j.id ? "active" : ""}" data-job="${j.id}">${esc(j.label)}</button>`).join("");
@@ -180,6 +304,7 @@ function renderM1() {
     state.jobId = job.id;
     state.fields = { ...job.fields };
     state.jd = job.jd;
+    jobEdited();
     save();
     renderM1();
     renderSampleResumes();
@@ -194,11 +319,12 @@ function compRow(c) {
   const kw = `<input data-id="${c.id}" data-field="keywords" value="${esc((c.keywords || []).join("、"))}" placeholder="同義詞／關鍵字，以頓號分隔" title="用來在履歷中找佐證的同義詞">`;
   const name = `<input data-id="${c.id}" data-field="name" value="${esc(c.name)}" title="${esc(c.description || "")}">`;
   const del = `<button class="icon-btn" data-del="${c.id}" title="刪除">✕</button>`;
-  if (c.type === "soft") return `<div class="comp-row soft">${name}${imp}${kw}${del}</div>`;
-  const group = `<select data-id="${c.id}" data-field="group" title="歸入哪個權重大類">
-      <option value="skill" ${c.group === "skill" ? "selected" : ""}>專業技能</option>
-      <option value="experience" ${c.group === "experience" ? "selected" : ""}>專案經驗</option></select>`;
-  return `<div class="comp-row">${name}${group}${imp}${kw}${del}</div>`;
+  const category = c.category || (c.type === "soft" ? "soft" : "hard");
+  const classification = `<select aria-label="職能類別" data-id="${c.id}" data-field="category">${Object.entries(CATEGORIES).map(([v,l]) => `<option value="${v}" ${category === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+  const group = `<select aria-label="評分權重大類" data-id="${c.id}" data-field="group">${Object.entries(GROUPS).map(([v,l]) => `<option value="${v}" ${c.group === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+  return `<div class="competency"><div class="comp-row">${name}${classification}${imp}${kw}${del}</div>
+    <label>與職缺的關聯／可評估行為<input data-id="${c.id}" data-field="description" value="${esc(c.description || "")}"></label>
+    <label>評分權重大類 ${group}</label></div>`;
 }
 
 function koRow(k) {
@@ -243,6 +369,17 @@ function onMatrixEdit(e) {
   if (f === "keywords") item.keywords = el.value.split(/[、,，]/).map((s) => s.trim()).filter(Boolean);
   else if (f === "min_years") item.min_years = Number(el.value) || 0;
   else item[f] = el.value;
+  if (f === "category") {
+    item.type = el.value === "soft" ? "soft" : "hard";
+    item.group = el.value === "soft" ? "soft" : "skill";
+    if (e.type === "change") renderMatrix();
+  }
+  if (f === "group") {
+    item.type = el.value === "soft" ? "soft" : "hard";
+    if (item.type === "soft") item.category = "soft";
+    else if (item.category === "soft") item.category = "hard";
+    if (e.type === "change") renderMatrix();
+  }
   if (f === "kind" && e.type === "change") renderMatrix(); // 切換門檻類型要重畫參數欄
   matrixChanged(false);
 }
@@ -262,6 +399,7 @@ function addMatrixItem(kind) {
 
 const rescoreSoon = debounce(() => rescore(), 300);
 function matrixChanged(rerender = true) {
+  invalidateAnalyses();
   if (rerender) renderMatrix();
   save();
   renderM2();
@@ -270,10 +408,36 @@ function matrixChanged(rerender = true) {
 
 // ================= 模組 2：權重與評分標準 =================
 function bindModule2() {
+  $("#btn-add-knockout").onclick = () => {
+    if (state.matrix) addMatrixItem("knockout");
+  };
+  const knockoutSettings = $("#knockout-settings");
+  knockoutSettings.addEventListener("click", (e) => {
+    const button = e.target.closest("[data-del]");
+    if (!button || !state.matrix) return;
+    state.matrix.knockouts = state.matrix.knockouts.filter((k) => k.id !== button.dataset.del);
+    matrixChanged();
+  });
+  knockoutSettings.addEventListener("input", (e) => {
+    const el = e.target;
+    if (!el.dataset.field || !state.matrix) return;
+    const item = state.matrix.knockouts.find((k) => k.id === el.dataset.id);
+    if (!item) return;
+    item[el.dataset.field] = el.dataset.field === "min_years" ? Math.max(0, Number(el.value) || 0) : el.value;
+    invalidateAnalyses();
+    renderMatrix();
+    save();
+    rescoreSoon();
+  });
+  knockoutSettings.addEventListener("change", (e) => {
+    if (e.target.dataset.field === "kind") renderM2();
+  });
   $("#apply-rubric").onclick = () => {
     if (!state.matrix) return;
     state.matrix.rubric = [...state.defaultRubric];
     state.matrix.competencies.forEach((c) => (c.rubric = [...state.defaultRubric]));
+    invalidateAnalyses();
+    rescoreSoon();
     save();
     renderM2();
   };
@@ -283,21 +447,32 @@ function bindModule2() {
   });
   $("#rubric-items").addEventListener("input", (e) => {
     const c = state.matrix.competencies.find((x) => x.id === e.target.dataset.id);
-    if (c) { c.rubric[Number(e.target.dataset.lv)] = e.target.value; save(); }
+    if (c) { c.rubric[Number(e.target.dataset.lv)] = e.target.value; invalidateAnalyses(); save(); rescoreSoon(); }
   });
 }
 
 function setWeight(key, value) {
   const w = state.weights;
-  value = Math.max(0, Math.min(100, Math.round(value)));
-  const others = Object.keys(w).filter((k) => k !== key);
-  const rest = 100 - value;
-  const otherSum = others.reduce((s, k) => s + w[k], 0);
-  others.forEach((k) => (w[k] = otherSum ? Math.round((w[k] / otherSum) * rest) : Math.round(rest / others.length)));
-  w[key] = value;
-  const diff = 100 - Object.values(w).reduce((a, b) => a + b, 0);
-  w[others[others.length - 1]] += diff; // 修正四捨五入誤差
+  w[key] = Math.max(0, Math.min(100, Math.round(value)));
   state.preset = Object.entries(samples.presets).find(([, p]) => Object.keys(w).every((k) => p.weights[k] === w[k]))?.[0] || "custom";
+}
+
+function totalWeight() {
+  return Object.keys(GROUPS).reduce((sum, key) => sum + Number(state.weights[key] || 0), 0);
+}
+
+function weightWarningMessage() {
+  const total = totalWeight();
+  if (total === 100) return "";
+  const difference = Math.abs(100 - total);
+  return total < 100
+    ? `目前總權重為 ${total}，尚差 ${difference}，請調整至 100。`
+    : `目前總權重為 ${total}，超出 ${difference}，請調整至 100。`;
+}
+
+function requireValidWeights(action) {
+  const warning = weightWarningMessage();
+  if (warning) throw new Error(`${warning} 請先調整權重後再${action}。`);
 }
 
 function renderM2() {
@@ -318,8 +493,10 @@ function renderM2() {
     <div class="slider-row">
       <div>${label}<span class="count">${counts[k]} 項職能</span></div>
       <input type="range" min="0" max="100" step="1" value="${state.weights[k]}" data-w="${k}" aria-label="${label}權重">
-      <div class="val"><span id="wv-${k}">${state.weights[k]}</span>%</div>
-    </div>`).join("") + `<div class="row space small muted"><span>總和</span><b>100%</b></div>`;
+      <div class="val"><span id="wv-${k}">${state.weights[k]}</span></div>
+    </div>`).join("") + `<div class="row space small"><span>總權重值</span><b id="weight-total"></b></div>
+      <div id="weight-warning" class="warn-box weight-warning" role="alert" aria-live="polite" hidden></div>`;
+  renderWeightTotal();
   $("#weight-sliders").querySelectorAll("[data-w]").forEach((s) => s.oninput = () => {
     setWeight(s.dataset.w, Number(s.value));
     for (const k of Object.keys(GROUPS)) {
@@ -327,6 +504,7 @@ function renderM2() {
       $("#wv-" + k).textContent = state.weights[k];
     }
     $("#presets").querySelectorAll("[data-preset]").forEach((b) => b.classList.toggle("active", b.dataset.preset === state.preset));
+    renderWeightTotal();
     save();
     rescoreSoon();
   });
@@ -336,28 +514,33 @@ function renderM2() {
   $("#rubric-default").innerHTML = state.defaultRubric
     .map((r, i) => `<span class="lv">${i}</span><input data-lv="${i}" value="${esc(r)}">`).join("");
   $("#rubric-items").innerHTML = (state.matrix?.competencies || []).map((c) => `
-    <details class="rubric-item"><summary>${esc(c.name)} <span class="tag ${c.importance === "必備" ? "must" : ""}">${c.importance}</span>
+    <div class="rubric-competency">
+      <div class="row space"><b>${esc(c.name)}</b></div>
+    <details class="rubric-item"><summary>0–3 分評分尺度 <span class="tag ${c.importance === "必備" ? "must" : ""}">${c.importance}</span>
       <span class="muted small">${GROUPS[c.group]}</span></summary>
       <div class="rubric-edit">${(c.rubric || state.defaultRubric).map((r, i) =>
         `<span class="lv">${i}</span><input data-id="${c.id}" data-lv="${i}" value="${esc(r)}">`).join("")}</div>
-    </details>`).join("") || '<div class="empty small">尚無職能。</div>';
+    </details></div>`).join("") || '<div class="empty small">尚無職能。</div>';
 
   // 門檻處理
   const kos = state.matrix?.knockouts || [];
+  $("#btn-add-knockout").disabled = !state.matrix;
   $("#knockout-settings").innerHTML = kos.map((k) => `
+    <div class="knockout-editor">${koRow(k)}
     <div class="ko-setting">
-      <div><b>${esc(k.name)}</b><div class="muted small">${esc(k.requirement || "")}</div></div>
       <div class="seg" data-ko="${k.id}">
         <button class="${k.mode === "eliminate" ? "on" : ""}" data-mode="eliminate">直接淘汰</button>
         <button class="${k.mode !== "eliminate" ? "on" : ""}" data-mode="deduct">扣分</button>
       </div>
       <label class="small" style="flex-direction:row;align-items:center;margin:0">扣
         <input type="number" min="0" max="100" style="width:4rem" data-penalty="${k.id}" value="${k.penalty ?? 15}" ${k.mode === "eliminate" ? "disabled" : ""}> 分</label>
-    </div>`).join("") || '<div class="empty small">職能矩陣中沒有門檻條件。</div>';
+    </div></div>`).join("") || `<div class="empty small">${state.matrix ? "目前沒有門檻條件，可按「＋ 新增門檻條件」。" : "請先到第一部分拆解職能，再新增門檻條件。"}</div>`;
   $("#knockout-settings").querySelectorAll(".seg button").forEach((b) => b.onclick = () => {
     const k = findMatrixItem(b.parentElement.dataset.ko);
     k.mode = b.dataset.mode;
-    matrixChanged(false);
+    save();
+    renderM2();
+    rescoreSoon();
   });
   $("#knockout-settings").querySelectorAll("[data-penalty]").forEach((i) => i.oninput = () => {
     findMatrixItem(i.dataset.penalty).penalty = Number(i.value) || 0;
@@ -372,9 +555,21 @@ function weightsChanged() {
   rescoreSoon();
 }
 
+function renderWeightTotal() {
+  const total = totalWeight();
+  $("#weight-total").textContent = total;
+  const warning = $("#weight-warning");
+  warning.textContent = weightWarningMessage();
+  warning.hidden = !warning.textContent;
+}
+
 async function renderPresetCompare() {
   const box = $("#preset-compare");
   const done = state.candidates.filter((c) => c.analysis);
+  if (weightWarningMessage()) {
+    box.innerHTML = `<div class="warn-box weight-warning" role="alert">${esc(weightWarningMessage())} 權重總和為 100 前，暫停比較評分。</div>`;
+    return;
+  }
   if (!state.matrix || !done.length) {
     box.innerHTML = '<div class="empty">到「履歷評分」分析至少一份履歷後，這裡會顯示各權重組合下的分數與排名變化。</div>';
     return;
@@ -394,8 +589,7 @@ async function renderPresetCompare() {
       const delta = j > 0 ? ranks[0][i] - ranks[j][i] : 0;
       const arrow = delta > 0 ? `<span class="rank-up">▲${delta}</span>` : delta < 0 ? `<span class="rank-down">▼${-delta}</span>` : "";
       return `<td class="num">${x.eliminated ? "淘汰" : x.total.toFixed(1)} <span class="muted small">#${ranks[j][i]}</span> ${arrow}</td>`;
-    }).join("")}</tr>`).join("")}</tbody></table>
-    <p class="muted small">▲▼ 表示與「目前設定」相比的名次變化。討論：哪一種權重最符合這個職缺？誰在不同權重下排名變動最大，為什麼？</p>`;
+    }).join("")}</tr>`).join("")}</tbody></table>`;
 }
 
 // ================= 模組 3：履歷評分 =================
@@ -416,6 +610,7 @@ function bindModule3() {
   };
 
   $("#btn-analyze").onclick = (e) => withBusy(e.target, $("#analyze-msg"), "分析中…", async () => {
+    requireValidWeights("進行履歷評分");
     if (!state.matrix) throw new Error("請先到「職缺拆解」產生職能矩陣");
     const text = $("#r-text").value.trim();
     if (!text) throw new Error("請貼上履歷內容");
@@ -431,6 +626,7 @@ function bindModule3() {
   });
 
   $("#btn-reanalyze").onclick = (e) => withBusy(e.target, $("#analyze-msg"), "重新分析中…", async () => {
+    requireValidWeights("重新分析履歷");
     for (const c of state.candidates) await analyzeCandidate(c);
     await rescore();
   });
@@ -452,16 +648,36 @@ function bindModule3() {
 }
 
 async function analyzeCandidate(cand) {
-  const data = await api("/api/resume/analyze", { jd: state.jd, matrix: state.matrix, resume: cand.text, use_ai: useAI() });
+  requireValidWeights("進行履歷評分");
+  if (state.matrixJob && state.matrixJob !== jobSignature()) throw new Error("職缺已變更，請確認後重新拆解職能。");
+  const weights = { ...state.weights };
+  const signature = JSON.stringify([jobSignature(), state.matrix, weights]);
+  const data = await api("/api/resume/analyze", { jd: state.jd, matrix: state.matrix, weights, resume: cand.text, use_ai: useAI() });
+  if (signature !== JSON.stringify([jobSignature(), state.matrix, state.weights])) throw new Error("分析期間職缺、矩陣或權重已變更，請確認後重新評分。");
+  if (weightWarningMessage()) throw new Error(`${weightWarningMessage()} 請先調整權重後重新評分。`);
   cand.analysis = data;
   if (!cand.name) cand.name = data.candidate_name && data.candidate_name !== "未知" ? data.candidate_name : `候選人 ${state.candidates.length + 1}`;
 }
 
 async function rescore() {
   const done = state.candidates.filter((c) => c.analysis);
+  if (weightWarningMessage()) {
+    done.forEach((c) => { c.result = null; });
+    save();
+    renderM3();
+    if ($("#m2").classList.contains("active")) renderPresetCompare();
+    return;
+  }
   if (state.matrix && done.length) {
+    const weights = { ...state.weights };
     try {
-      const data = await api("/api/score", { matrix: state.matrix, weights: state.weights, analyses: done.map((c) => c.analysis) });
+      const data = await api("/api/score", { matrix: state.matrix, weights, analyses: done.map((c) => c.analysis) });
+      if (weightWarningMessage() || JSON.stringify(weights) !== JSON.stringify(state.weights)) {
+        done.forEach((c) => { c.result = null; });
+        save();
+        renderM3();
+        return;
+      }
       done.forEach((c, i) => (c.result = data.results[i]));
     } catch (e) { console.error(e); }
   }
@@ -482,6 +698,7 @@ function renderSampleResumes() {
 }
 
 function sortedCandidates() {
+  if (weightWarningMessage()) return [];
   return state.candidates.filter((c) => c.result)
     .sort((a, b) => (a.result.eliminated - b.result.eliminated) || (b.result.total - a.result.total));
 }
@@ -501,13 +718,19 @@ function renderM3() {
         <td><button class="icon-btn" data-remove="${c.id}" title="移除">✕</button></td>
       </tr>`).join("")}</tbody></table>
     <p class="muted small">點選列查看詳細報告。共 ${ranked.length} 份，模擬 HR 一次比較多份履歷。</p>`
-    : '<div class="empty">尚無候選人。</div>';
+    : weightWarningMessage()
+      ? `<div class="warn-box weight-warning" role="alert">${esc(weightWarningMessage())} 履歷評分已暫停；調整權重後即可繼續。</div>`
+      : '<div class="empty">尚無候選人。</div>';
   renderDetail();
 }
 
 function renderDetail() {
-  const c = state.candidates.find((x) => x.id === state.activeId && x.result);
   const box = $("#detail");
+  if (weightWarningMessage()) {
+    box.innerHTML = `<div class="card warn-box weight-warning" role="alert">${esc(weightWarningMessage())} 權重總和為 100 前，不顯示履歷評分結果。</div>`;
+    return;
+  }
+  const c = state.candidates.find((x) => x.id === state.activeId && x.result);
   if (!c || !state.matrix) {
     box.innerHTML = '<div class="card empty">選擇或分析一份履歷，這裡會顯示完整評分報告。</div>';
     return;
@@ -516,14 +739,14 @@ function renderDetail() {
   const items = Object.fromEntries(a.items.map((i) => [i.id, i]));
 
   const hero = `<div class="card">
-    ${r.stale ? '<div class="warn-box">職能矩陣在分析後有變更，新職能尚未評分（以 0 分計）。請按「全部重新分析」。</div>' : ""}
+    ${r.stale ? '<div class="warn-box">職缺、矩陣或 Rubric 已變更，先前評分待重新確認。請按「全部重新分析」。</div>' : ""}
     ${a.warning ? `<div class="warn-box">${esc(a.warning)}</div>` : ""}
     <div class="score-hero">
       <div class="hero-num">${r.total.toFixed(1)}<small> / 100</small></div>
       <div>
         <h2 style="margin:0">${esc(c.name)} <span class="pill ${r.eliminated ? "bad" : r.total >= 60 ? "good" : ""}">${esc(r.recommendation)}</span>
           <span class="pill small ${a.source === "ai" ? "ai" : ""}">${a.source === "ai" ? "AI 評分" : "規則式評分"}</span></h2>
-        <div class="muted small">Match Score = Σ（大類權重 × 大類得分）${r.penalty ? `，原始 ${r.raw_score.toFixed(1)} − 門檻扣分 ${r.penalty}` : ""}。必備職能權重 ×2、加分職能 ×1。</div>
+        <div class="muted small">Match Score = Σ（大類權重 × 大類得分）${r.penalty ? `，原始 ${r.raw_score.toFixed(1)} − 門檻扣分 ${r.penalty}` : ""}。各大類內職能採等權重平均。</div>
         <ul class="ko-list">${r.knockouts.map((k) => `<li>${STATUS_TEXT[k.status]}　<b>${esc(k.name)}</b>
           <span class="muted small">${esc(k.evidence || "")}${k.effect !== "—" ? `｜${esc(k.effect)}` : ""}</span></li>`).join("") || '<li class="muted">無門檻條件</li>'}</ul>
       </div>
@@ -636,8 +859,10 @@ function bindModule4() {
   $("#iv-candidate").onchange = renderInterview;
   $("#btn-print").onclick = () => window.print();
   $("#btn-interview").onclick = (e) => withBusy(e.target, $("#iv-msg"), "產生中…", async () => {
+    requireValidWeights("產生面試問題");
     const c = state.candidates.find((x) => x.id === $("#iv-candidate").value);
     if (!c) throw new Error("請先在「履歷評分」分析至少一份履歷");
+    if (c.analysis.stale || c.result?.stale) throw new Error("職缺或評分標準已變更，請先重新分析履歷。");
     const data = await api("/api/interview", {
       jd: state.jd, matrix: state.matrix, weights: state.weights, analysis: c.analysis, resume: c.text, use_ai: useAI(),
     });
