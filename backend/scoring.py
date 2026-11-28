@@ -1,21 +1,14 @@
 """評分：規則式履歷分析（無 API 時）＋ 權重加總、門檻、缺口分析（永遠由這裡計算）。"""
-import datetime as dt
 import re
 
 from ats.keywords import _pattern
 
 from .matrix import DEGREE_ALIASES, DEGREES
+from .sentences import calculate_work_experience_months, format_work_experience
 
 GROUP_LABELS = {"skill": "專業技能", "experience": "專案經驗", "soft": "軟實力"}
-IMPORTANCE_WEIGHT = {"必備": 2.0, "加分": 1.0}
 LEVEL_TO_SCORE = {"green": 3, "yellow": 2, "red": 1, "info": 1}
 
-EDU_LINE = re.compile(r"學系|大學|學士|碩士|博士|研究所|高中|高職|專科|university|college", re.I)
-RANGE = re.compile(
-    r"((?:19|20)\d{2})(?:\s*[./年-]\s*(\d{1,2}))?\s*[–—\-~～至到]+\s*"
-    r"(?:((?:19|20)\d{2})(?:\s*[./年-]\s*(\d{1,2}))?|(至今|現在|present))",
-    re.I,
-)
 EXPLICIT_YEARS = re.compile(r"(\d+(?:\.\d+)?)\s*年(?:以上)?(?:的)?(?:相關|工作)?(?:經驗|經歷)")
 
 
@@ -32,7 +25,7 @@ def rule_score_items(matrix: dict, sentences: list[dict]) -> list[dict]:
         hits = [s for s in sentences if _matches(s["text"], keywords)]
         if not hits:
             items.append({"id": comp["id"], "score": 0, "evidence": [],
-                          "reason": "履歷中找不到此職能或其同義詞"})
+                          "reason": "待人工確認：履歷未提及此職能或同義詞，不代表不具備此能力"})
             continue
         best = max(hits, key=lambda s: LEVEL_TO_SCORE[s["level"]])
         score = LEVEL_TO_SCORE[best["level"]]
@@ -49,18 +42,7 @@ def rule_score_items(matrix: dict, sentences: list[dict]) -> list[dict]:
 
 def estimate_years(resume: str) -> float:
     explicit = [float(m.group(1)) for m in EXPLICIT_YEARS.finditer(resume)]
-    today = dt.date.today()
-    months = 0
-    for line in resume.splitlines():
-        if EDU_LINE.search(line):
-            continue
-        for m in RANGE.finditer(line):
-            y1, m1 = int(m.group(1)), int(m.group(2) or 1)
-            if m.group(5):
-                y2, m2 = today.year, today.month
-            else:
-                y2, m2 = int(m.group(3)), int(m.group(4) or 12)
-            months += max(0, (y2 - y1) * 12 + (m2 - m1))
+    months = calculate_work_experience_months(resume) or 0
     return round(max([months / 12, *explicit]), 1)
 
 
@@ -77,13 +59,15 @@ def rule_check_knockouts(matrix: dict, resume: str) -> list[dict]:
     for ko in matrix["knockouts"]:
         if ko["kind"] == "years" and ko.get("min_years"):
             years = estimate_years(resume)
+            months = calculate_work_experience_months(resume)
             if years == 0:
                 out.append({"id": ko["id"], "status": "unknown", "evidence": "",
                             "reason": "履歷中找不到可計算的工作期間"})
             else:
                 status = "met" if years >= ko["min_years"] else "not_met"
-                out.append({"id": ko["id"], "status": status, "evidence": f"工作期間合計約 {years} 年",
-                            "reason": f"（規則判斷）要求 {ko['min_years']} 年，估算 {years} 年"})
+                duration = format_work_experience(months)
+                out.append({"id": ko["id"], "status": status, "evidence": f"累計工作年資：{duration}",
+                            "reason": f"（規則判斷）要求 {ko['min_years']} 年，日期合計 {duration}"})
         elif ko["kind"] == "education" and ko.get("min_degree", "不限") != "不限":
             degree = highest_degree(resume)
             if degree == "不限":
@@ -114,7 +98,21 @@ def recommendation(total: float, eliminated: bool) -> str:
     return "不建議"
 
 
+def validate_weights(weights: dict) -> None:
+    try:
+        values = [float(weights.get(key, 0)) for key in GROUP_LABELS]
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("三大類權重必須是 0–100 的數字，且總和需為 100。") from None
+    if any(not math.isfinite(value) or value < 0 or value > 100 for value in values):
+        raise ValueError("三大類權重必須介於 0–100，且總和需為 100。")
+    total = sum(values)
+    if not math.isclose(total, 100, rel_tol=0, abs_tol=1e-9):
+        difference = abs(100 - total)
+        if total < 100:
+            raise ValueError(f"目前總權重為 {total:g}，尚差 {difference:g}，請調整至 100。")
+        raise ValueError(f"目前總權重為 {total:g}，超出 {difference:g}，請調整至 100。")
 def compute(matrix: dict, weights: dict, analysis: dict) -> dict:
+    validate_weights(weights)
     scores = {i["id"]: i for i in analysis.get("items", [])}
     groups = {}
     missing_ids = []
@@ -124,9 +122,8 @@ def compute(matrix: dict, weights: dict, analysis: dict) -> dict:
             missing_ids.append(comp["id"])
         s = max(0, min(3, int(item["score"]))) if item else 0
         g = groups.setdefault(comp["group"], {"got": 0.0, "total": 0.0, "count": 0})
-        w = IMPORTANCE_WEIGHT.get(comp["importance"], 1.0)
-        g["got"] += w * s / 3
-        g["total"] += w
+        g["got"] += s / 3
+        g["total"] += 1
         g["count"] += 1
 
     group_scores = {}
@@ -143,6 +140,8 @@ def compute(matrix: dict, weights: dict, analysis: dict) -> dict:
     for ko in matrix["knockouts"]:
         res = ko_results.get(ko["id"], {"status": "unknown", "evidence": "", "reason": "尚未判斷"})
         effect = "—"
+        if res["status"] == "not_met" and not res.get("evidence", "").strip():
+            res = {**res, "status": "unknown", "reason": "待人工確認：缺少證據"}
         if res["status"] == "not_met":
             if ko.get("mode") == "eliminate":
                 eliminated, effect = True, "直接淘汰"
@@ -154,17 +153,23 @@ def compute(matrix: dict, weights: dict, analysis: dict) -> dict:
         ko_view.append({**res, "id": ko["id"], "name": ko["name"], "effect": effect})
 
     total = round(max(0.0, raw - penalty), 1)
+    stale = bool(missing_ids) or bool(analysis.get("stale"))
+    needs_review = (stale or not matrix["competencies"]
+                    or any(k["status"] == "unknown" for k in ko_view)
+                    or any(not scores.get(c["id"], {}).get("evidence") for c in matrix["competencies"]))
+    if stale:
+        eliminated = False
     return {
         "raw_score": round(raw, 1),
         "penalty": penalty,
         "total": total,
         "eliminated": eliminated,
-        "recommendation": recommendation(total, eliminated),
+        "recommendation": "待人工確認" if needs_review else recommendation(total, eliminated),
         "group_scores": group_scores,
         "effective_weights": {k: round(w / weight_sum * 100, 1) for k, w in active.items()} if weight_sum else {},
         "knockouts": ko_view,
         "gaps": gap_analysis(matrix, scores, ko_view),
-        "stale": bool(missing_ids),
+        "stale": stale,
     }
 
 

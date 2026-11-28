@@ -124,6 +124,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--series-1); 
   border-radius: 6px; font-size: .86rem; margin: .4rem 0 .8rem;
 }
 .warn-box { background: var(--warning-bg); border-left: 3px solid var(--warning); padding: .45rem .8rem; border-radius: 6px; font-size: .86rem; margin: .4rem 0; }
+.weight-warning { background: var(--critical-bg); border-left-color: var(--critical); color: var(--critical); font-weight: 600; }
 .switch { flex-direction: row; align-items: center; margin: 0; color: var(--text-primary); cursor: pointer; }
 .settings summary { cursor: pointer; list-style: none; }
 .settings summary::before { content: "⚙ "; }
@@ -140,6 +141,13 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--series-1); 
   padding: .3rem 0; border-bottom: 1px solid var(--grid);
 }
 .comp-row.soft { grid-template-columns: 1.3fr auto 1.6fr auto; }
+.competency { border-bottom: 1px solid var(--grid); padding: .4rem 0; }
+.competency label { margin: .3rem 0; }
+#job-draft { padding: .7rem; border: 1px solid var(--axis); border-radius: 6px; }
+@media (max-width: 700px) {
+  .competency .comp-row { grid-template-columns: 1fr 1fr; }
+  .row { flex-wrap: wrap; }
+}
 .comp-row.ko { grid-template-columns: 1.3fr auto auto 1.4fr auto; }
 .comp-row input, .comp-row select { padding: .25rem .4rem; font-size: .86rem; min-width: 0; }
 
@@ -153,6 +161,8 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--series-1); 
 .rubric-edit input { font-size: .86rem; padding: .25rem .45rem; }
 details.rubric-item { border-top: 1px solid var(--grid); padding: .35rem 0; }
 details.rubric-item summary { cursor: pointer; }
+.rubric-competency { border-top: 1px solid var(--grid); padding: .5rem 0; }
+.rubric-competency .rubric-item { border-top: 0; }
 .ko-setting { display: grid; grid-template-columns: 1fr auto auto; gap: .6rem; align-items: center; padding: .5rem 0; border-bottom: 1px solid var(--grid); }
 .seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; background: none; padding: .25rem .7rem; font: inherit; font-size: .85rem; cursor: pointer; color: var(--text-secondary); }

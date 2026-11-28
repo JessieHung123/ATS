@@ -54,7 +54,7 @@ def env_key() -> str:
     return os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
 
 
-def call_json(gc: GeminiClient, system: str, user: str, schema: dict, effort: str = "low") -> dict:
+def call_json(gc: GeminiClient, system: str, user: str | list[dict], schema: dict, effort: str = "low") -> dict:
     """送出一次請求，回傳解析後的 JSON。任何失敗都轉成 AIError，讓呼叫端改用規則式備案。"""
     try:
         try:
@@ -66,9 +66,11 @@ def call_json(gc: GeminiClient, system: str, user: str, schema: dict, effort: st
             else:
                 raise
     except (APIConnectionError, httpx2.HTTPError, NoResponseError) as e:  # 含逾時
+        if "10013" in str(e):
+            raise AIError("Gemini 連線被執行環境或防火牆拒絕（Windows 10013），請以允許連網的方式重新啟動 ATS 服務") from e
         if "timeout" in type(e).__name__.lower() or "timed out" in str(e).lower():
             raise AIError(f"Gemini 超過 {TIMEOUT_MS // 1000} 秒沒有回應（免費版忙碌中），請稍後再試或換更快的模型") from e
-        raise AIError(f"連不上 Gemini（請檢查網路）：{e}") from e
+        raise AIError("連不上 Gemini，請檢查網路或稍後重試") from e
     except GeminiNextGenAPIClientError as e:
         raise AIError(_friendly(getattr(e, "status_code", None), str(e), gc.model)) from e
     except GenAiError as e:
@@ -76,7 +78,7 @@ def call_json(gc: GeminiClient, system: str, user: str, schema: dict, effort: st
     except errors.APIError as e:
         raise AIError(_friendly(e.code, str(e), gc.model)) from e
     except Exception as e:  # 其他未預期的 SDK 例外
-        raise AIError(f"Gemini 呼叫失敗：{str(e)[:300]}") from e
+        raise AIError("Gemini 呼叫失敗，請檢查伺服器設定或稍後重試") from e
 
     if interaction.status == "incomplete":
         raise AIError("回應超出長度上限")
@@ -104,7 +106,13 @@ def _create(gc: GeminiClient, system: str, user: str, schema: dict, thinking: di
 
 def _friendly(code: int | None, detail: str, model: str) -> str:
     low = detail.lower()
-    if code in (400, 401, 403) and "api key" in low:
+    if code == 401:
+        return "API Key 無效或已停用，請到 Google AI Studio 確認"
+    if code == 403:
+        if "api key" in low or "api_key" in low or "credential" in low:
+            return "API Key 無效或受限制，請到 Google AI Studio 確認"
+        return "此 API Key 沒有存取 Gemini API 的權限，請檢查金鑰所屬專案與 API 設定"
+    if code == 400 and ("api key" in low or "api_key" in low):
         return "API Key 無效，請到 Google AI Studio 確認"
     if code == 404 or (code == 400 and "model" in low and ("not found" in low or "not supported" in low)):
         return f"目前無法使用模型 {model}，請在「設定」換一個模型"
@@ -112,4 +120,4 @@ def _friendly(code: int | None, detail: str, model: str) -> str:
         return f"{model} 已達免費額度的使用上限，請稍後再試或在「設定」換一個模型"
     if code is not None and code >= 500:
         return "Gemini 伺服器暫時異常，請稍後再試"
-    return f"Gemini 呼叫失敗（{code}）：{detail[:300]}"
+    return f"Gemini 呼叫失敗（{code}），請檢查伺服器設定或稍後重試"
