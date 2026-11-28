@@ -66,9 +66,11 @@ def call_json(gc: GeminiClient, system: str, user: str | list[dict], schema: dic
             else:
                 raise
     except (APIConnectionError, httpx2.HTTPError, NoResponseError) as e:  # 含逾時
+        if "10013" in str(e):
+            raise AIError("Gemini 連線被執行環境或防火牆拒絕（Windows 10013），請以允許連網的方式重新啟動 ATS 服務") from e
         if "timeout" in type(e).__name__.lower() or "timed out" in str(e).lower():
             raise AIError(f"Gemini 超過 {TIMEOUT_MS // 1000} 秒沒有回應（免費版忙碌中），請稍後再試或換更快的模型") from e
-        raise AIError(f"連不上 Gemini（請檢查網路）：{e}") from e
+        raise AIError("連不上 Gemini，請檢查網路或稍後重試") from e
     except GeminiNextGenAPIClientError as e:
         raise AIError(_friendly(getattr(e, "status_code", None), str(e), gc.model)) from e
     except GenAiError as e:
@@ -76,7 +78,7 @@ def call_json(gc: GeminiClient, system: str, user: str | list[dict], schema: dic
     except errors.APIError as e:
         raise AIError(_friendly(e.code, str(e), gc.model)) from e
     except Exception as e:  # 其他未預期的 SDK 例外
-        raise AIError(f"Gemini 呼叫失敗：{str(e)[:300]}") from e
+        raise AIError("Gemini 呼叫失敗，請檢查伺服器設定或稍後重試") from e
 
     if interaction.status == "incomplete":
         raise AIError("回應超出長度上限")
@@ -117,5 +119,5 @@ def _friendly(code: int | None, detail: str, model: str) -> str:
     if code == 429:
         return f"{model} 已達免費額度的使用上限，請稍後再試或在「設定」換一個模型"
     if code is not None and code >= 500:
-        return f"Gemini 伺服器暫時異常（HTTP {code}）；已自動重試，通常不是 API Key 問題，請稍後再試"
-    return f"Gemini 呼叫失敗（{code}）：{detail[:300]}"
+        return "Gemini 伺服器暫時異常，請稍後再試"
+    return f"Gemini 呼叫失敗（{code}），請檢查伺服器設定或稍後重試"

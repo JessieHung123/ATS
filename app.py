@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from ats.ai_scorer import ScoringError, evaluate_resume, extract_jd_keywords
-from ats.gemini import env_key, make_client
+from ats.gemini import make_client
 from ats.keywords import Keyword, match_keywords, naive_extract
 from ats.pdf_parser import parse_pdf
 
@@ -59,9 +59,7 @@ def final_score(r: dict, kw_weight: float) -> float:
 # ---------------- 側邊欄 ----------------
 with st.sidebar:
     st.header("⚙️ 設定")
-    default_key = env_key()
-    api_key = st.text_input("Gemini API Key（Google AI Studio）", value=default_key, type="password",
-                            help="留空則只使用關鍵字比對（不呼叫 AI）")
+    st.caption("API Key 由伺服器環境變數 GEMINI_API_KEY 或 GOOGLE_API_KEY 提供。")
     effort = st.select_slider("AI 評估深度", options=["low", "medium", "high"], value="medium",
                               help="越深越精準，但較慢、較快用完免費額度")
     kw_weight = st.slider("關鍵字分數權重", 0.0, 1.0, 0.4, 0.05,
@@ -70,7 +68,7 @@ with st.sidebar:
     st.divider()
     st.caption("AI 已設定為忽略年齡、性別、婚姻等與職務無關的個人特徵。評分僅供參考，最終決策請由 HR 判斷。")
 
-client = make_client(api_key)
+client = make_client()
 
 st.title("📄 ATS 履歷評分系統")
 st.caption("貼上職缺描述、上傳候選人履歷（PDF），系統以「關鍵字比對 + AI 語意評估」為候選人評分排名。")
